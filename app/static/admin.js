@@ -53,7 +53,7 @@ document.querySelectorAll("#tabs button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
     document.querySelectorAll("main > section").forEach(s => { s.hidden = s.id !== `tab-${b.dataset.tab}`; });
-    ({ status: loadStatus, settings: loadSettings, sensors: loadSensors, log: loadLog })[b.dataset.tab]();
+    ({ status: loadStatus, settings: loadSettings, sensors: loadSensors, keys: loadKeys, log: loadLog })[b.dataset.tab]();
   };
 });
 
@@ -217,6 +217,41 @@ async function loadSensors() {
     };
   });
 }
+
+// ------------------------------------------------------------------ klucze API
+
+async function loadKeys() {
+  const rows = await api("/api/admin/keys");
+  $("#keys tbody").innerHTML = rows.map(k => `<tr class="${k.revoked ? "revoked" : ""}">
+    <td>${esc(k.name)}</td><td><code>${esc(k.prefix)}…</code></td><td>${num(k.rate_per_min)}/min</td>
+    <td>${when(k.created)}</td><td>${when(k.last_used)}</td><td>${num(k.uses)}</td>
+    <td>${k.revoked ? `unieważniony ${when(k.revoked)}` : `<button class="btn danger" data-id="${k.id}" data-name="${esc(k.name)}">Unieważnij</button>`}</td>
+  </tr>`).join("") || `<tr><td colspan="7" class="hint">Brak kluczy.</td></tr>`;
+  document.querySelectorAll("#keys button[data-id]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm(`Unieważnić klucz „${b.dataset.name}”? Kto go używa, straci dostęp od razu. Tego nie da się cofnąć.`)) return;
+      await api(`/api/admin/keys/${b.dataset.id}/revoke`, { method: "POST" });
+      toast(`Klucz „${b.dataset.name}” unieważniony`);
+      loadKeys();
+    };
+  });
+}
+
+$("#key-form").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const r = await api("/api/admin/keys", { method: "POST",
+      body: JSON.stringify({ name: $("#key-name").value, rate_per_min: Number($("#key-rate").value) }) });
+    const box = $("#key-new");
+    box.hidden = false;
+    box.innerHTML = `<b>Klucz „${esc(r.name)}” — skopiuj go teraz, później nie będzie widoczny:</b>
+      <code>${esc(r.key)}</code><span class="hint">Użycie: nagłówek <code style="display:inline">X-API-Key: …</code> w każdym zapytaniu do /api/v1.</span>`;
+    $("#key-name").value = "";
+    loadKeys();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
 
 // ------------------------------------------------------------------ dziennik
 

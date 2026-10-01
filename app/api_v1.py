@@ -1,7 +1,8 @@
 """Publiczne API v1 — stabilny kontrakt dla Home Assistanta i innych klientów.
 
 Endpointy strony (/api/sensors, /api/hex …) mogą się zmieniać razem z mapą; ten moduł nie.
-Wszystko tylko do odczytu, bez ciasteczek, z CORS „*” i limitem zapytań na IP.
+Wszystko tylko do odczytu, bez ciasteczek, z CORS „*”. Dane wymagają klucza API (nagłówek
+X-API-Key albo parametr api_key); każdy klucz ma własny limit i da się go unieważnić osobno.
 """
 import time
 from collections import defaultdict, deque
@@ -9,30 +10,39 @@ from collections import defaultdict, deque
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from . import collector, db
+from . import apikeys, collector, db
 from .quality import FLAG_LABELS, distance_km
 
 router = APIRouter(prefix="/api/v1")
 
-RATE_PER_MIN = 120
+INDEX_PER_MIN = 30   # strona informacyjna /api/v1 bez klucza — limit na IP
 _hits = defaultdict(deque)
 
 FIELDS = ("pm1", "pm25", "pm4", "pm10", "pressure", "pressure_sl", "humidity", "temperature")
 
 
-def _limit(request: Request):
+def _ip_limit(request: Request):
     ip = request.client.host if request.client else "?"
     now = time.time()
     q = _hits[ip]
     while q and q[0] < now - 60:
         q.popleft()
-    if len(q) >= RATE_PER_MIN:
-        raise HTTPException(429, f"Limit {RATE_PER_MIN} zapytań na minutę")
+    if len(q) >= INDEX_PER_MIN:
+        raise HTTPException(429, f"Limit {INDEX_PER_MIN} zapytań na minutę")
     q.append(now)
 
 
+def _limit(request: Request):
+    """Wymaga ważnego klucza API; limit zapytań liczony osobno dla każdego klucza."""
+    key = request.headers.get("x-api-key") or request.query_params.get("api_key")
+    _, err = apikeys.check(key)
+    if err:
+        raise HTTPException(*err)
+
+
 def _json(data, max_age=60):
-    return JSONResponse(data, headers={"Cache-Control": f"public, max-age={max_age}",
+    # private: odpowiedzi są za kluczem, wspólne cache po drodze nie mogą ich oddawać innym
+    return JSONResponse(data, headers={"Cache-Control": f"private, max-age={max_age}",
                                        "Access-Control-Allow-Origin": "*"})
 
 
@@ -66,11 +76,21 @@ def _nearest(lat, lon, n, include_suspect):
     return [_sensor(f, d) for d, f in rows[:n]]
 
 
+@router.options("/{path:path}")
+def preflight(path: str):
+    # przeglądarka pyta o zgodę na nagłówek X-API-Key przy zapytaniach z innych stron
+    return JSONResponse({}, headers={"Access-Control-Allow-Origin": "*",
+                                     "Access-Control-Allow-Methods": "GET, OPTIONS",
+                                     "Access-Control-Allow-Headers": "X-API-Key",
+                                     "Access-Control-Max-Age": "86400"})
+
+
 @router.get("")
 def index(request: Request):
-    _limit(request)
+    _ip_limit(request)
     return _json({
         "name": "air-locker-map API", "version": 1, "docs": "/api",
+        "auth": "Nagłówek X-API-Key (albo parametr api_key). Klucz wydaje administrator strony.",
         "source": "Nieoficjalne dane czujników z paczkomatów InPost; stacje GIOŚ jako odniesienie.",
         "endpoints": ["/api/v1/stats", "/api/v1/sensors", "/api/v1/sensors/{name}",
                       "/api/v1/sensors/{name}/history?hours=24", "/api/v1/sensors/{name}/daily?days=30",

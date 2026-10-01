@@ -496,7 +496,6 @@ def next_runs():
 
 def scheduler_loop():
     time.sleep(5)
-    build_cache()
     while True:
         try:
             if db.setting("collector_enabled") and not state.job:

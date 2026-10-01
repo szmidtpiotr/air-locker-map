@@ -17,8 +17,12 @@
 <header class="top"><h1>API</h1><span class="spacer"></span><a href="/">← Mapa</a></header>
 <main>
   <div class="card">
-    <p>Publiczne API tylko do odczytu, JSON, bez klucza. Limit: <b>120 zapytań na minutę</b> z jednego adresu IP.
-      Dane odświeżane są co ok. godzinę, więc pytanie częściej niż co 10–15 minut nic nie daje.</p>
+    <p>API tylko do odczytu, JSON. <b>Wymaga klucza</b> — wysyłaj go w nagłówku <code>X-API-Key</code>
+      (albo w parametrze <code>?api_key=</code>). Klucz wydaje administrator strony; każdy klucz ma własny limit zapytań
+      na minutę i może zostać unieważniony. Dane odświeżane są co ok. godzinę, więc pytanie częściej niż co 10–15 minut nic nie daje.</p>
+<pre>curl -H "X-API-Key: alm_…" https://air-locker-map.studio-colorbox.com/api/v1/sensors/KAP02M</pre>
+    <p class="hint">Bez klucza: <code>401</code>, zły lub unieważniony klucz: <code>403</code>, przekroczony limit: <code>429</code>.
+      Sama mapa na stronie głównej jest publiczna.</p>
     <p class="hint">Źródło: nieoficjalne odczyty czujników z paczkomatów InPost, stacje GIOŚ jako odniesienie.
       Projekt hobbystyczny, bez gwarancji dostępności. Kod: <a href="https://github.com/szmidtpiotr/air-locker-map">github.com/szmidtpiotr/air-locker-map</a>.</p>
   </div>
@@ -64,6 +68,8 @@
   - resource_template: >-
       https://air-locker-map.studio-colorbox.com/api/v1/nearest?n=1&amp;lat={{ state_attr('zone.home', 'latitude') }}&amp;lon={{ state_attr('zone.home', 'longitude') }}
     scan_interval: 900
+    headers:
+      X-API-Key: !secret air_locker_map_key
     sensor:
       - name: "Paczkomat PM2.5"
         unique_id: paczkomat_pm25
@@ -91,7 +97,8 @@
         unit_of_measurement: "hPa"
         device_class: atmospheric_pressure
         state_class: measurement</pre>
-    <p class="hint">Konkretny paczkomat zamiast „najbliższego”: <code>resource: https://…/api/v1/sensors/KAP02M</code>
+    <p class="hint">W <code>secrets.yaml</code>: <code>air_locker_map_key: alm_…</code>.
+      Konkretny paczkomat zamiast „najbliższego”: <code>resource: https://…/api/v1/sensors/KAP02M</code>
       i <code>value_template: "{{ value_json.measurements.pm25 }}"</code>.</p>
   </div>
 </main>

@@ -25,6 +25,7 @@
       <button data-tab="status" class="active">Status</button>
       <button data-tab="settings">Parametry</button>
       <button data-tab="sensors">Czujniki</button>
+      <button data-tab="keys">Klucze API</button>
       <button data-tab="log">Dziennik</button>
     </nav>
     <span class="spacer"></span>
@@ -61,6 +62,24 @@
         </div>
         <p class="hint" id="sensor-hint"></p>
         <table id="sensors"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-keys" hidden>
+      <div class="card">
+        <h2>Nowy klucz</h2>
+        <p class="hint">Każdy klucz osobno: komu dajesz dostęp, ten dostaje swój. Unieważnienie jednego nie rusza pozostałych.
+          Pełny klucz widać tylko raz — zaraz po utworzeniu.</p>
+        <form id="key-form" class="buttons">
+          <input type="text" id="key-name" placeholder="Nazwa, np. HA dom" maxlength="60" required>
+          <input type="number" id="key-rate" value="60" min="1" max="600" title="Limit zapytań na minutę"> <span class="hint">zap./min</span>
+          <button class="btn">Utwórz klucz</button>
+        </form>
+        <div id="key-new" hidden></div>
+      </div>
+      <div class="card">
+        <h2>Klucze</h2>
+        <table id="keys"><thead><tr><th>Nazwa</th><th>Początek klucza</th><th>Limit</th><th>Utworzony</th><th>Ostatnio użyty</th><th>Użyć</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 

@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS daily (
 );
 CREATE INDEX IF NOT EXISTS daily_day ON daily(day);
 
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT, key_hash TEXT UNIQUE, prefix TEXT,     -- prefix: pierwsze znaki, żeby rozpoznać klucz w panelu
+    rate_per_min INTEGER, created INTEGER, revoked INTEGER, last_used INTEGER, uses INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
 CREATE TABLE IF NOT EXISTS runs (

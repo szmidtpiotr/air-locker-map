@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api_v1, collector, config, db, sources
+from . import api_v1, apikeys, collector, config, db, sources
 from .quality import FLAG_LABELS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -59,6 +59,7 @@ def startup():
     db.init()
     # przebiegi przerwane restartem usługi nie mają końca — zamykamy je, żeby nie wisiały jako „trwa”
     db.write("UPDATE runs SET finished=started, note='przerwane (restart usługi)' WHERE finished IS NULL")
+    collector.build_cache()  # od razu po starcie, inaczej API przez kilka sekund zwraca 404
     collector.start_scheduler()
 
 
@@ -161,7 +162,7 @@ def api_gios():
 
 @app.get("/api/history/{name}")
 def api_history(name: str, hours: int = 24):
-    hours = max(1, min(hours, 24 * 30))
+    hours = max(1, min(hours, 24))  # strona potrzebuje tylko wykresu 24 h; dłuższa historia → API v1 z kluczem
     rows = db.q("SELECT ts, pm1, pm25, pm10, pressure_sl, humidity, temperature FROM readings "
                 "WHERE name=? AND ts>=? ORDER BY ts", (name.upper(), int(time.time()) - hours * 3600))
     return [dict(r) for r in rows]
@@ -312,6 +313,35 @@ def admin_sensors(kind: str = "flagged"):
         l.flags, l.pm25, l.humidity, l.changed_at, l.ts FROM lockers k LEFT JOIN latest l USING(name)
         WHERE {where} ORDER BY k.name LIMIT 1000""")
     return [dict(r) for r in rows]
+
+
+@app.get("/api/admin/keys", dependencies=[Depends(admin)])
+def admin_keys():
+    return apikeys.listing()
+
+
+@app.post("/api/admin/keys", dependencies=[Depends(admin)])
+async def admin_key_create(request: Request):
+    body = await request.json()
+    name = " ".join(str(body.get("name", "")).split())[:60]
+    try:
+        rate = int(body.get("rate_per_min", 60))
+    except (TypeError, ValueError):
+        rate = 0
+    if not name:
+        raise HTTPException(400, "Podaj nazwę klucza (np. „HA dom”)")
+    if not 1 <= rate <= 600:
+        raise HTTPException(400, "Limit: 1–600 zapytań na minutę")
+    key = apikeys.create(name, rate)
+    collector.log(f"admin: nowy klucz API „{name}” ({key[:10]}…, {rate}/min)")
+    return {"key": key, "name": name, "rate_per_min": rate}
+
+
+@app.post("/api/admin/keys/{key_id}/revoke", dependencies=[Depends(admin)])
+def admin_key_revoke(key_id: int):
+    apikeys.revoke(key_id)
+    collector.log(f"admin: unieważniony klucz API #{key_id}")
+    return {"ok": True}
 
 
 @app.post("/api/admin/sensor/{name}", dependencies=[Depends(admin)])

@@ -252,8 +252,12 @@ function render() {
     INDEX_COLORS.forEach((c, i) => ramp.push(0.15 + i * 0.17, c));
     map.setPaintProperty("heat", "heatmap-color", ramp);
   }
-  document.querySelector('[data-view="heat"]').disabled = !heatOk;
-  if (!heatOk && state.view === "heat") state.view = "points";
+  // plama ma sens tylko dla pyłów — przy innej wielkości przełączamy na PM2.5 i mówimy dlaczego
+  if (!heatOk && state.view === "heat") {
+    state.metric = "pm25";
+    state.heatNote = `Plama działa tylko dla pyłów — przełączono z „${m.label}” na PM2.5.`;
+    return render();
+  }
 
   const v = state.view;
   const vis = (id, on) => map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
@@ -281,7 +285,8 @@ function render() {
     points: "Przy oddaleniu czujniki łączą się w grupy — kolor grupy to najgorszy czujnik (pyły) albo średnia.",
     hex: "Mediana z czujników w każdym sześciokącie. Odporna na pojedyncze zepsute czujniki.",
     heat: "Plama rośnie tam, gdzie jest dużo czujników z wysokim odczytem.",
-  }[state.view];
+  }[state.view] + (state.view === "heat" && state.heatNote ? " " + state.heatNote : "");
+  state.heatNote = null;
   renderLegend();
   if (state.origin) renderNearest();
 }

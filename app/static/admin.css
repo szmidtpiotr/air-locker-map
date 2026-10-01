@@ -56,3 +56,11 @@ pre#log { margin: 0; white-space: pre-wrap; font-size: 12px; max-height: 70vh; o
 #toast.error { background: var(--err); }
 
 @media (max-width: 700px) { .field { grid-template-columns: 1fr; } .field .help { grid-column: 1; } }
+
+#key-form input[type=text] { flex: 1; min-width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+#key-form input[type=number] { width: 90px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+#key-form .hint { align-self: center; margin: 0; }
+#key-new { margin-top: 12px; padding: 12px; background: #ecfdf3; border-radius: 8px; }
+#key-new code { display: block; font-size: 15px; padding: 8px; background: #fff; border-radius: 6px; margin: 6px 0; word-break: break-all; user-select: all; }
+tr.revoked td { color: var(--muted); text-decoration: line-through; }
+tr.revoked td:last-child { text-decoration: none; }
