@@ -26,6 +26,7 @@
       <button data-tab="settings">Parametry</button>
       <button data-tab="sensors">Czujniki</button>
       <button data-tab="health">Zdrowie sieci</button>
+      <button data-tab="alerts">Alerty</button>
       <button data-tab="keys">Klucze API</button>
       <button data-tab="log">Dziennik</button>
     </nav>
@@ -79,6 +80,26 @@
         <p class="hint">Raz w miesiącu próbka paczkomatów z FR, IT, ES, PT, GB, BE, NL, LU — czy pojawiły się czujniki
           (na październik 2026 nie było żadnego, szczegóły w <code>docs/zagranica.md</code>).</p>
         <div id="abroad"></div>
+      </div>
+    </section>
+
+    <section id="tab-alerts" hidden>
+      <div class="card">
+        <h2>Bot Telegram</h2>
+        <p class="hint">Token od <b>@BotFather</b> (w Telegramie: <code>/newbot</code>, nazwa, potem skopiuj token). Serwer sprawdzi go w Telegramie
+          przed zapisem; bot rusza bez restartu. Token nie jest nigdzie wyświetlany.</p>
+        <div id="tg-status" class="hint"></div>
+        <form id="tg-form" class="buttons">
+          <input type="password" id="tg-token" placeholder="123456789:AA…" autocomplete="off" style="flex:1;min-width:260px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit">
+          <button class="btn">Zapisz token</button>
+          <button type="button" class="btn danger" id="tg-off">Wyłącz bota</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Powiadomienia w przeglądarce</h2>
+        <div id="push-status" class="hint"></div>
+        <p class="hint">Ocena alertów po każdym przebiegu odczytów: mediana z 3 najbliższych czujników do 5 km, alarm powyżej progu,
+          odwołanie poniżej 80% progu, kolejny alarm najwcześniej po 3 h. Działa tylko przez https (adres publiczny).</p>
       </div>
     </section>
 

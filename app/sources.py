@@ -181,12 +181,15 @@ def gios_stations():
 
 
 def gios_sensors(station_id):
+    """{"PM10": [id, …], "PM2.5": [id, …]} — stacja może mieć kilka stanowisk tej samej wielkości:
+    automatyczne (pomiar co godzinę) i manualne (dane dopiero po 4–8 tygodniach, getData zwraca 400).
+    API nie mówi, które jest które."""
     d = json.loads(http(f"{GIOS}/station/sensors/{station_id}?size=50"))
     out = {}
     for s in _gios_list(d):
         code = s.get("Wskaźnik - kod")
         if code in ("PM2.5", "PM10"):
-            out[code] = s["Identyfikator stanowiska"]
+            out.setdefault(code, []).append(s["Identyfikator stanowiska"])
     return out
 
 

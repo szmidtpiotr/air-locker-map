@@ -497,6 +497,37 @@ def admin_health():
     return {"provinces": collector.network_health(), "abroad": json.loads(abroad["value"]) if abroad else None}
 
 
+@app.get("/api/admin/alerts", dependencies=[Depends(admin)])
+def admin_alerts():
+    return {
+        "telegram": {"configured": bool(alerts.tg_token()), "from_panel": bool(db.setting_raw("telegram_token")),
+                     "bot": alerts.tg_bot_name(), **alerts.tg_status,
+                     "subs": db.q1("SELECT COUNT(*) AS n FROM tg_subs WHERE lat IS NOT NULL")["n"]},
+        "push": {"subs": db.q1("SELECT COUNT(*) AS n FROM push_subs")["n"],
+                 "high": db.q1("SELECT COUNT(*) AS n FROM push_subs WHERE state='high'")["n"]},
+    }
+
+
+@app.put("/api/admin/telegram", dependencies=[Depends(admin)])
+async def admin_telegram(request: Request):
+    body = await request.json()
+    token = str(body.get("token", "")).strip()
+    if not token:
+        db.write("DELETE FROM settings WHERE key='telegram_token'")
+        collector.log("admin: bot Telegram wyłączony")
+        return {"ok": True, "bot": None}
+    if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{30,60}", token):
+        raise HTTPException(400, "To nie wygląda na token z BotFathera (liczba:ciąg znaków)")
+    try:
+        name = alerts.tg_check_token(token)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Telegram odrzucił ten token") from None
+    db.write("INSERT INTO settings(key, value) VALUES('telegram_token', ?) "
+             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (token,))
+    collector.log(f"admin: bot Telegram ustawiony (@{name})")
+    return {"ok": True, "bot": name}
+
+
 @app.get("/api/admin/keys", dependencies=[Depends(admin)])
 def admin_keys():
     return apikeys.listing()

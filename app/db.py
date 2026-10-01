@@ -148,6 +148,12 @@ def get_settings():
     return {s["key"]: stored.get(s["key"], s["default"]) for s in config.SETTINGS}
 
 
+def setting_raw(key):
+    """Wartość spoza schematu config.SETTINGS (np. stan wewnętrzny) albo None."""
+    r = q1("SELECT value FROM settings WHERE key=?", (key,))
+    return r["value"] if r else None
+
+
 def setting(key):
     r = q1("SELECT value FROM settings WHERE key=?", (key,))
     return json.loads(r["value"]) if r else config.BY_KEY[key]["default"]

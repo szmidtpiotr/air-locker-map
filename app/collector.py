@@ -10,6 +10,7 @@ import math
 import os
 import threading
 import time
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 import h3
@@ -67,6 +68,7 @@ def job_lockers():
             province=excluded.province, description=excluded.description,
             shipx_level=excluded.shipx_level, last_seen=excluded.last_seen""", rows)
     sensors = sum(1 for i in items if i.get("air_index_level"))
+    _locker_tree.clear()
     log(f"lista paczkomatów: {len(items)}, z czujnikiem {sensors}")
     return len(items), 0
 
@@ -246,8 +248,9 @@ def pressure_trend(now):
 
 
 def job_wind():
-    """Wiatr z Open-Meteo na siatce co 0,75° (ok. 130 punktów = tyle „wywołań” w limicie darmowym)."""
-    pts = [(round(la, 2), round(lo, 2)) for la in _frange(49.0, 54.9, 0.75) for lo in _frange(14.2, 24.2, 0.75)]
+    """Wiatr z Open-Meteo na siatce co 0,5°, tylko punkty nad Polską (~190 = tyle „wywołań”; limit darmowy 10 tys./dobę)."""
+    pts = [(round(la, 2), round(lo, 2)) for la in _frange(49.0, 54.9, 0.5) for lo in _frange(14.1, 24.2, 0.5)
+           if _inside_poland(la, lo)]
     rows = []
     for i in range(0, len(pts), 100):
         chunk = pts[i:i + 100]
@@ -532,6 +535,7 @@ def job_gios():
     stations = sources.gios_stations()
     now = int(time.time())
     ok = 0
+    manual = set(json.loads(db.setting_raw("gios_manual") or "[]"))
     state.progress = (0, len(stations))
     for n, st in enumerate(stations, 1):
         if state.cancel:
@@ -539,16 +543,32 @@ def job_gios():
         state.progress = (n, len(stations))
         try:
             sens = sources.gios_sensors(st["station_id"])
-            vals = {}
-            ts = None
-            for code, sid in sens.items():
-                v, t = sources.gios_latest(sid)
-                vals[code] = v
-                ts = ts or t
-                time.sleep(0.2)
         except Exception as e:  # noqa: BLE001
             log(f"GIOŚ {st['name']}: {e}")
             continue
+        vals, ts = {}, None
+        for code, sids in sens.items():
+            # pierwsze stanowisko z danymi; manualne (400) zapamiętujemy i pomijamy w kolejnych przebiegach
+            for sid in sids:
+                if sid in manual:
+                    continue
+                try:
+                    v, t = sources.gios_latest(sid)
+                except urllib.error.HTTPError as e:
+                    if e.code == 400:
+                        manual.add(sid)
+                    else:
+                        log(f"GIOŚ {st['name']} {code}: {e}")
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    log(f"GIOŚ {st['name']} {code}: {e}")
+                    continue
+                finally:
+                    time.sleep(0.2)
+                if v is not None:
+                    vals[code] = v
+                    ts = ts or t
+                    break
         if not vals:
             continue
         if ts:
@@ -561,6 +581,8 @@ def job_gios():
                   ts, now))
         ok += 1
         time.sleep(0.2)
+    db.write("INSERT INTO settings(key, value) VALUES('gios_manual', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+             (json.dumps(sorted(manual)),))
     db.write("DELETE FROM gios_readings WHERE ts < datetime('now', 'localtime', ?)", (f"-{db.setting('history_days')} days",))
     log(f"GIOŚ: stacji z PM {ok}")
     try:
@@ -617,6 +639,22 @@ def start_job(key):
 
 # ---------------------------------------------------------------- dane dla strony
 
+_locker_tree = {}
+
+
+def _inside_poland(lat, lon, km=20.0):
+    """Punkt najwyżej `km` od jakiegokolwiek paczkomatu (32 tys. punktów = kształt Polski bez rysowania granic)."""
+    from scipy.spatial import cKDTree
+
+    if "tree" not in _locker_tree:
+        pts = [(r["lon"] * 68.5, r["lat"] * 111.32) for r in db.q("SELECT lat, lon FROM lockers WHERE lat IS NOT NULL")]
+        if not pts:
+            return True
+        _locker_tree["tree"] = cKDTree(pts)
+    d, _ = _locker_tree["tree"].query((lon * 68.5, lat * 111.32))
+    return d <= km
+
+
 def build_cache():
     rows = db.q("""
         SELECT k.name, k.lat, k.lon, k.city, k.street, k.building, k.post_code, k.description, k.page_url,
@@ -648,7 +686,7 @@ def build_cache():
     cache["wind"] = {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
          "properties": {"speed": r["speed"], "gust": r["gust"], "direction": r["direction"], "ts": r["ts"]}}
-        for r in db.q("SELECT * FROM wind")]}
+        for r in db.q("SELECT * FROM wind") if _inside_poland(r["lat"], r["lon"])]}
     cache["built"] = int(time.time())
     stats_cache["at"] = 0
 

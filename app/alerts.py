@@ -25,7 +25,13 @@ log = logging.getLogger("airmap.alerts")
 DATA_DIR = os.path.dirname(db.DB_PATH)
 VAPID_FILE = os.path.join(DATA_DIR, "vapid_private.pem")
 SITE = os.environ.get("AIRMAP_SITE", "https://air-locker-map.studio-colorbox.com")
-TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+ENV_TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+tg_status = {"running": False, "error": None, "last_update": None}
+
+
+def tg_token():
+    """Token z panelu admina (baza) albo z pliku env — panel ma pierwszeństwo."""
+    return (db.setting_raw("telegram_token") or ENV_TG_TOKEN or "").strip()
 
 RADIUS_KM = 5.0
 NEAREST = 3
@@ -194,9 +200,9 @@ def push_subscribe(sub, lat, lon, threshold, label, ip):
 
 # ---------------------------------------------------------------- Telegram
 
-def tg_api(method, **params):
+def tg_api(method, token=None, **params):
     data = urllib.parse.urlencode(params).encode()
-    req = urllib.request.Request(f"https://api.telegram.org/bot{TG_TOKEN}/{method}", data=data)
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token or tg_token()}/{method}", data=data)
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read())
 
@@ -287,10 +293,21 @@ def _tg_set_location(chat, lat, lon):
 
 
 def _tg_loop():
-    offset = 0
+    """Long polling. Token czytany co obrót — zmiana w panelu działa bez restartu usługi."""
+    offset, token_used = 0, None
     while True:
+        token = tg_token()
+        if not token:
+            tg_status.update(running=False)
+            time.sleep(15)
+            continue
+        if token != token_used:
+            offset, token_used = 0, token
+            _bot["checked"] = 0
+        tg_status.update(running=True)
         try:
             r = tg_api("getUpdates", offset=offset, timeout=50, allowed_updates='["message"]')
+            tg_status.update(error=None, last_update=int(time.time()))
             for u in r.get("result", []):
                 offset = u["update_id"] + 1
                 if "message" in u:
@@ -299,6 +316,7 @@ def _tg_loop():
                     except Exception as e:  # noqa: BLE001
                         log.warning("telegram wiadomość: %s", e)
         except Exception as e:  # noqa: BLE001
+            tg_status.update(error=str(e)[:200])
             log.warning("telegram getUpdates: %s", e)
             time.sleep(10)
 
@@ -308,7 +326,7 @@ _bot = {"name": None, "checked": 0}
 
 def tg_bot_name():
     """Nazwa bota (do linku t.me/…), sprawdzana raz na godzinę."""
-    if not TG_TOKEN:
+    if not tg_token():
         return None
     if time.time() - _bot["checked"] > 3600:
         _bot["checked"] = time.time()
@@ -319,8 +337,11 @@ def tg_bot_name():
     return _bot["name"]
 
 
+def tg_check_token(token):
+    """Nazwa bota albo wyjątek — sprawdzenie przed zapisem w panelu."""
+    return tg_api("getMe", token=token)["result"]["username"]
+
+
 def start():
     init()
-    if TG_TOKEN:
-        threading.Thread(target=_tg_loop, daemon=True).start()
-        collector.log("alerty: bot Telegram uruchomiony")
+    threading.Thread(target=_tg_loop, daemon=True).start()   # sam czeka, aż pojawi się token

@@ -53,7 +53,7 @@ document.querySelectorAll("#tabs button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
     document.querySelectorAll("main > section").forEach(s => { s.hidden = s.id !== `tab-${b.dataset.tab}`; });
-    ({ status: loadStatus, settings: loadSettings, sensors: loadSensors, health: loadHealth, keys: loadKeys, log: loadLog })[b.dataset.tab]();
+    ({ status: loadStatus, settings: loadSettings, sensors: loadSensors, health: loadHealth, alerts: loadAlerts, keys: loadKeys, log: loadLog })[b.dataset.tab]();
   };
 });
 
@@ -238,6 +238,39 @@ async function loadHealth() {
        ${Object.values(a.found).some(n => n) ? " — <b style=\"color:var(--ok)\">pojawiły się czujniki!</b>" : ""}`
     : `Jeszcze nie sprawdzano — zadanie „Czujniki za granicą” uruchomi się samo albo z zakładki Status.`;
 }
+
+// ------------------------------------------------------------------ alerty
+
+async function loadAlerts() {
+  const a = await api("/api/admin/alerts");
+  const t = a.telegram;
+  $("#tg-status").innerHTML = !t.configured ? "Bot <b>wyłączony</b> — brak tokenu."
+    : `Bot <b>@${esc(t.bot || "?")}</b> — ${t.running ? "działa" : "uruchamia się…"}${t.error ? ` · <span class="err">błąd: ${esc(t.error)}</span>` : ""}
+       · subskrybentów: <b>${num(t.subs)}</b>${t.last_update ? ` · ostatni kontakt z Telegramem ${when(t.last_update)}` : ""}
+       ${t.bot ? ` · <a href="https://t.me/${esc(t.bot)}" target="_blank" rel="noopener">otwórz bota</a>` : ""}
+       ${t.from_panel ? "" : " · (token z pliku env na serwerze)"}`;
+  $("#tg-off").hidden = !t.from_panel;
+  $("#push-status").innerHTML = `Subskrypcji: <b>${num(a.push.subs)}</b>, w tej chwili w stanie alarmu: <b>${num(a.push.high)}</b>.`;
+}
+
+$("#tg-form").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const r = await api("/api/admin/telegram", { method: "PUT", body: JSON.stringify({ token: $("#tg-token").value }) });
+    $("#tg-token").value = "";
+    toast(`Bot @${r.bot} zapisany — rusza w ciągu kilkunastu sekund`);
+    setTimeout(loadAlerts, 3000);
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+$("#tg-off").onclick = async () => {
+  if (!confirm("Wyłączyć bota? Subskrybenci przestaną dostawać alerty (ich zapisy zostają).")) return;
+  await api("/api/admin/telegram", { method: "PUT", body: JSON.stringify({ token: "" }) });
+  toast("Bot wyłączony");
+  loadAlerts();
+};
 
 // ------------------------------------------------------------------ klucze API
 
