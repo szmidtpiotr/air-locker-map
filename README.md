@@ -65,6 +65,16 @@ Kod w `app/` (FastAPI + SQLite, kolektor w tym samym procesie), wdrożenie `depl
 na kontener Debiana (`/opt/air-locker-map`, usługa `air-locker-map.service`, port 8080).
 Pierwsze wdrożenie generuje hasło panelu i wypisuje je raz na ekran.
 
+### Bezpieczeństwo
+
+- Dane z ShipX, GIOŚ i Nominatim traktowane jako obce: escapowane przed wstawieniem do HTML-a, linki tylko do `inpost.pl`.
+- Nagłówki: CSP (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`; bez nagłówka `server`.
+- Panel admina: hasło (scrypt), sesja w podpisanym ciasteczku `HttpOnly` + `SameSite=Strict` (+ `Secure` za HTTPS),
+  5 nieudanych prób na 10 minut na IP. Za reverse proxy panel warto dodatkowo ograniczyć do sieci lokalnej
+  (`allow <LAN>; deny all;` na `^/(admin|api/admin/)`) — tak działa wersja na żywo.
+- Wyszukiwarka adresów: 20 zapytań/min na IP, do Nominatim najwyżej 1 zapytanie/s (zasady usługi).
+- Uvicorn ufa `X-Forwarded-For` tylko od adresu proxy (`--forwarded-allow-ips`), więc limity liczą prawdziwe IP.
+
 ## Skąd są dane
 
 1. **ShipX API** (`api-shipx-pl.easypack24.net/v1/points`, publiczne, bez klucza) — współrzędne
