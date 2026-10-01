@@ -65,13 +65,22 @@ Kod w `app/` (FastAPI + SQLite, kolektor w tym samym procesie), wdrożenie `depl
 na kontener Debiana (`/opt/air-locker-map`, usługa `air-locker-map.service`, port 8080).
 Pierwsze wdrożenie generuje hasło panelu i wypisuje je raz na ekran.
 
+Na mapie: kropki / sześciokąty / plama (interpolacja), **suwak czasu** z animacją ostatnich 24 h, **izobary**,
+**trend ciśnienia** (3 h), **wiatr** z Open-Meteo, stacje GIOŚ. Statystyki: rankingi miast, profil dobowy,
+**porównanie paczkomatów ze stacjami GIOŚ**. **Alerty smogowe**: powiadomienia w przeglądarce, bot Telegram,
+czujnik + blueprint w Home Assistancie.
+
 ### API i Home Assistant
 
 - Dokumentacja API: **https://air-locker-map.studio-colorbox.com/api** — `/api/v1/...` (czujniki, najbliższe do punktu
   albo do dowolnego paczkomatu, historia, dzienne średnie, statystyki).
 - **API wymaga klucza** (nagłówek `X-API-Key`). Klucze wydaje i unieważnia administrator w panelu `/admin` → Klucze API;
   każdy ma własny limit zapytań, unieważnienie jednego nie rusza pozostałych. Sama mapa jest publiczna.
-- Integracja dla Home Assistanta (HACS): **[szmidtpiotr/ha-air-locker-map](https://github.com/szmidtpiotr/ha-air-locker-map)**.
+- Integracja dla Home Assistanta (HACS): **[szmidtpiotr/ha-air-locker-map](https://github.com/szmidtpiotr/ha-air-locker-map)**
+  (z czujnikiem „Przekroczenie normy” i blueprintem alertu), karta Lovelace:
+  **[szmidtpiotr/ha-air-locker-map-card](https://github.com/szmidtpiotr/ha-air-locker-map-card)**.
+- Bot Telegram włącza się po dopisaniu `TELEGRAM_BOT_TOKEN=…` do `/etc/air-locker-map.env` i restarcie usługi.
+- Czujniki są tylko w Polsce — rozpoznanie innych krajów w [docs/zagranica.md](docs/zagranica.md).
 
 ### Bezpieczeństwo
 
