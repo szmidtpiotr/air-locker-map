@@ -254,7 +254,16 @@ def job_wind():
     rows = []
     for i in range(0, len(pts), 100):
         chunk = pts[i:i + 100]
-        for (la, lo), w in zip(chunk, sources.wind_grid(chunk)):
+        for attempt in range(3):          # Open-Meteo potrafi chwilowo odpowiadać 503
+            try:
+                data = sources.wind_grid(chunk)
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == 2:
+                    raise
+                log(f"wiatr: {e}, ponawiam za 20 s")
+                time.sleep(20)
+        for (la, lo), w in zip(chunk, data):
             rows.append((la, lo, w["speed"], w["gust"], w["direction"], w["ts"]))
     db.write("DELETE FROM wind")
     db.write_many("INSERT INTO wind(lat, lon, speed, gust, direction, ts) VALUES(?,?,?,?,?,?)", rows)
