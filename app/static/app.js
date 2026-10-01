@@ -473,7 +473,7 @@ function openGios(f) {
     box.innerHTML = st
       ? `<div class="warn" style="background:#f0f6ff;color:#1d2330">Paczkomaty do ${c.summary.radius_km} km (${st.sensors}): średnio
           <b>${fmt(st.locker_mean)}</b> wobec <b>${fmt(st.gios_mean)}</b> µg/m³ ze stacji
-          (różnica ${st.bias > 0 ? "+" : ""}${fmt(st.bias)}, korelacja ${st.r ?? "–"}, ${num(st.n)} par godzinowych).</div>`
+          (różnica ${Math.abs(st.bias) < 0.05 ? fmt(0) : (st.bias > 0 ? "+" : "") + fmt(st.bias)}, korelacja ${st.r == null ? "–" : fmt(st.r, 2)}, ${num(st.n)} par godzinowych).</div>`
       : `<div class="meta">Brak paczkomatów z czujnikiem w pobliżu tej stacji albo jeszcze za mało wspólnych pomiarów.</div>`;
   });
 }
@@ -757,9 +757,10 @@ function cityRows(list) {
 
 function compareHtml(c) {
   if (!c || !c.all) return `<p class="muted">Porównanie pojawi się, gdy zbierze się kilka godzin wspólnych pomiarów paczkomatów i stacji GIOŚ.</p>`;
+  const signed = v => (Math.abs(v) < 0.05 ? fmt(0) : (v > 0 ? "+" : "") + fmt(v));   // bez „-0,0”
   const row = (label, x) => x ? `<tr><td>${label}</td><td class="num">${num(x.n)}</td><td class="num">${fmt(x.locker_mean)}</td>
-      <td class="num">${fmt(x.gios_mean)}</td><td class="num">${x.bias > 0 ? "+" : ""}${fmt(x.bias)}</td>
-      <td class="num">${x.ratio ?? "–"}</td><td class="num">${x.r ?? "–"}</td></tr>` : "";
+      <td class="num">${fmt(x.gios_mean)}</td><td class="num">${signed(x.bias)}</td>
+      <td class="num">${x.ratio == null ? "–" : fmt(x.ratio, 2)}</td><td class="num">${x.r == null ? "–" : fmt(x.r, 2)}</td></tr>` : "";
   return `<table class="stat-table"><tr><th>Czujniki</th><th class="num">Par</th><th class="num">Paczkomat</th><th class="num">GIOŚ</th>
       <th class="num">Różnica</th><th class="num">Stosunek</th><th class="num">Korelacja</th></tr>
     ${row("wszystkie", c.all)}${row("nowsze (z PM4)", c.new)}${row("starsze", c.old)}</table>
