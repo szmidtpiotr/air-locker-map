@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import h3
 
 from . import db, sources
-from .quality import compute_flags, sea_level_pressure
+from .quality import WARNING_FLAGS, compute_flags, sea_level_pressure
 
 DATA_DIR = os.path.dirname(db.DB_PATH)
 SITEMAP_CACHE = os.path.join(DATA_DIR, "sitemap-urls.txt")
@@ -435,7 +435,7 @@ def build_cache():
                                    "level", "gen", "changed_at", "elevation")}
         props["address"] = " ".join(x for x in (r["street"], r["building"]) if x) + f", {r['post_code']} {r['city']}"
         props["flags"] = flags
-        props["suspect"] = bool(flags)
+        props["suspect"] = any(f not in WARNING_FLAGS for f in flags)
         feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
                       "properties": props})
     cache["sensors"] = {"type": "FeatureCollection", "features": feats}

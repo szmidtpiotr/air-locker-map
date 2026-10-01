@@ -68,11 +68,16 @@ def compute_flags(rows, s, now=None):
     return {k: ",".join(v) for k, v in flags.items()}
 
 
+# Flagi, które tylko ostrzegają (czujnik zostaje na mapie i w statystykach). Wilgotność ~100% to zwykle
+# mgła albo deszcz — w wilgotne wieczory dotyczy całych regionów, więc wycinanie tych czujników
+# usuwałoby z mapy pół województwa.
+WARNING_FLAGS = {"wet"}
+
 FLAG_LABELS = {
     "stuck": "zawieszony czujnik (PM1 = PM2.5 = PM10)",
     "absurd": "nierealnie wysoki odczyt pyłu",
     "dead": "czujnik pyłu pokazuje zero (prawdopodobnie martwy)",
-    "wet": "zalany czujnik (wilgotność ~100%)",
+    "wet": "wilgotność ~100% — mgła albo zalany czujnik; pył może być zawyżony",
     "stale": "odczyt nie zmienia się od wielu godzin",
     "outlier": "mocno odstaje od sąsiednich czujników",
     "hidden": "ukryty ręcznie przez administratora",
