@@ -28,6 +28,29 @@ python3 paczkomat_powietrze.py WAW84A     # od razu
 python3 paczkomat_powietrze.py WAW84A -n 8
 ```
 
+### Bez klonowania repo (prosto z GitHuba)
+
+`python3 https://...` nie zadziała — Python traktuje adres jak nazwę pliku na dysku.
+Działają za to te sposoby:
+
+```bash
+# uv (najprościej, jeśli masz uv)
+uv run https://raw.githubusercontent.com/szmidtpiotr/air-locker-map/develop/paczkomat_powietrze.py WAW84A
+
+# sam Python — każdy system, także Windows (tam: python zamiast python3)
+python3 -c "import urllib.request;exec(urllib.request.urlopen('https://raw.githubusercontent.com/szmidtpiotr/air-locker-map/develop/paczkomat_powietrze.py').read())" WAW84A
+
+# bash / zsh
+python3 <(curl -fsSL https://raw.githubusercontent.com/szmidtpiotr/air-locker-map/develop/paczkomat_powietrze.py)
+```
+
+Bez nazwy na końcu skrypt zapyta o nią. **Nie używaj `curl ... | python3 -` bez nazwy**:
+skrypt idzie wtedy przez standardowe wejście, więc pytanie o nazwę od razu dostaje
+koniec danych i program się wywala.
+
+Uruchamiasz kod, który akurat leży na GitHubie. Żeby przypiąć konkretną wersję,
+zamień w adresie `develop` na hash commita (np. `.../air-locker-map/59841e7/paczkomat_powietrze.py`).
+
 Pierwsze uruchomienie pobiera listę stron paczkomatów z inpost.pl (ok. 20 s) i trzyma ją
 tydzień w `~/.cache/paczkomat-powietrze/`. Kolejne trwają kilka sekund.
 
