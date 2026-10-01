@@ -6,6 +6,9 @@
 <title>Powietrze z paczkomatów</title>
 <link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png">
+<meta name="theme-color" content="#1d2330">
 </head>
 <body>
 <div id="map"></div>
@@ -63,8 +66,12 @@
     </section>
 
     <section id="nearest-box" hidden>
-      <h2>Najbliższe czujniki</h2>
+      <h2>Najbliższe czujniki <button class="linkbtn alert-here" id="alert-origin">🔔 alert smogowy tutaj</button></h2>
       <ol id="nearest"></ol>
+    </section>
+    <section id="my-alerts-box" hidden>
+      <h2>Moje alerty w tej przeglądarce</h2>
+      <ul id="my-alerts"></ul>
     </section>
   </div>
 
@@ -78,6 +85,13 @@
   <div class="modal-box" role="dialog" aria-labelledby="stats-title">
     <header><h2 id="stats-title">Statystyki</h2><button class="icon" id="stats-close" aria-label="Zamknij">×</button></header>
     <div id="stats-body">Ładowanie…</div>
+  </div>
+</div>
+
+<div id="alert-modal" class="modal" hidden>
+  <div class="modal-box narrow-box" role="dialog" aria-labelledby="alert-title">
+    <header><h2 id="alert-title">Alert smogowy</h2><button class="icon" id="alert-close" aria-label="Zamknij">×</button></header>
+    <div id="alert-body"></div>
   </div>
 </div>
 

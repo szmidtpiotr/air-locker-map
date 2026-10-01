@@ -414,12 +414,15 @@ async function openSensor(name, fly = false) {
     ${warn}${status}
     <div class="chart" data-name="${esc(p.name)}"></div>
     <div class="profile" data-name="${esc(p.name)}"></div>
+    <button class="alert-btn" data-alert="${esc(p.name)}">🔔 Alert smogowy w tej okolicy</button>
     <div class="meta">Odczyt ${ago(p.ts)} · bez zmian od ${ago(p.changed_at)}${p.elevation != null ? ` · ${Math.round(p.elevation)} m n.p.m.` : ""}
     ${safeUrl(p.page_url) ? ` · <a href="${esc(p.page_url)}" target="_blank" rel="noopener noreferrer">strona paczkomatu</a>` : ""}</div>
   </div>`;
   new maplibregl.Popup({ maxWidth: "320px" }).setLngLat(f.geometry.coordinates).setHTML(html).addTo(map);
   drawChart(p.name);
   drawProfile(p.name);
+  const ab = [...document.querySelectorAll(".pop .alert-btn")].find(el => el.dataset.alert === p.name);
+  if (ab) ab.onclick = () => openAlert(f.geometry.coordinates[1], f.geometry.coordinates[0], p.address);
 }
 
 async function drawChart(name) {
@@ -500,6 +503,7 @@ async function search(q) {
 
 function goTo(x, zoom = 12) {
   state.origin = [x.lon, x.lat];
+  state.originLabel = x.label;
   if (state.searchMarker) state.searchMarker.remove();
   state.searchMarker = new maplibregl.Marker({ color: "#1d2330" }).setLngLat(state.origin).addTo(map);
   map.flyTo({ center: state.origin, zoom });
@@ -612,6 +616,96 @@ function applyHash() {
   if (!isFinite(lat) || !isFinite(lon) || lat < 48 || lat > 56 || lon < 13 || lon > 25) return;
   const z = Math.min(Math.max(parseFloat(p.get("z")) || 13, 5), 17);
   goTo({ lat, lon, label: "" }, z);
+}
+
+// ------------------------------------------------------------------ alerty smogowe
+
+const ALERTS_KEY = "airmap-alerts";
+const myAlerts = () => JSON.parse(localStorage.getItem(ALERTS_KEY) || "[]");
+const saveAlerts = list => { localStorage.setItem(ALERTS_KEY, JSON.stringify(list)); renderMyAlerts(); };
+
+async function alertsConfig() {
+  if (!state.alertsCfg) state.alertsCfg = await fetch("/api/alerts/config").then(r => r.json());
+  return state.alertsCfg;
+}
+
+const b64ToBytes = b64 => {
+  const pad = "=".repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+};
+
+async function openAlert(lat, lon, label) {
+  const cfg = await alertsConfig();
+  const pushOk = "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
+  const opts = Object.entries(cfg.thresholds).map(([v, desc]) =>
+    `<label class="opt"><input type="radio" name="thr" value="${v}" ${v === "35" ? "checked" : ""}> PM2.5 &gt; <b>${v}</b> µg/m³ <span class="muted">(${esc(desc)})</span></label>`).join("");
+  $("#alert-body").innerHTML = `
+    <p>Powiadomię, gdy w okolicy <b>${esc(label || "tego miejsca")}</b> przekroczony zostanie próg — wartość to mediana
+      z 3 najbliższych działających czujników do ${cfg.radius_km} km. Gdy powietrze się poprawi, przyjdzie odwołanie.</p>
+    ${opts}
+    <div class="ways">
+      <button class="way primary" id="alert-push" ${pushOk ? "" : "disabled"}>🔔 Powiadomienia w tej przeglądarce</button>
+      ${pushOk ? "" : `<p class="muted">${window.isSecureContext ? "Ta przeglądarka nie obsługuje powiadomień." :
+        "Powiadomienia działają tylko przez https — otwórz stronę pod publicznym adresem."} Na iPhonie: najpierw „Do ekranu początkowego”.</p>`}
+      ${cfg.telegram_bot ? `<a class="way" id="alert-tg" target="_blank" rel="noopener">✈️ Na Telegramie (@${esc(cfg.telegram_bot)})</a>` : ""}
+      <a class="way" href="https://github.com/szmidtpiotr/ha-air-locker-map" target="_blank" rel="noopener">🏠 W Home Assistant (integracja)</a>
+    </div>
+    <div class="msg" id="alert-msg"></div>`;
+  const thr = () => Number(document.querySelector('input[name="thr"]:checked').value);
+  const tgLink = () => `https://t.me/${cfg.telegram_bot}?start=${Math.round(lat * 1e5)}_${Math.round(lon * 1e5)}_${thr()}`;
+  if (cfg.telegram_bot) {
+    const a = $("#alert-tg");
+    a.href = tgLink();
+    document.querySelectorAll('input[name="thr"]').forEach(r => { r.onchange = () => { a.href = tgLink(); }; });
+  }
+  if (pushOk) $("#alert-push").onclick = () => subscribePush(lat, lon, label, thr(), cfg.push_key);
+  $("#alert-modal").hidden = false;
+}
+
+async function subscribePush(lat, lon, label, threshold, key) {
+  const msg = $("#alert-msg");
+  try {
+    msg.textContent = "Proszę o zgodę na powiadomienia…";
+    if (await Notification.requestPermission() !== "granted") throw new Error("Bez zgody na powiadomienia alert nie zadziała.");
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription() ||
+      await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    const r = await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription: sub.toJSON(), lat, lon, threshold, label }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.detail || r.statusText);
+    // jedna przeglądarka = jedna subskrypcja; nowy alert zastępuje poprzedni
+    saveAlerts([{ id: body.id, token: body.token, label: label || "wybrane miejsce", threshold, lat, lon }]);
+    msg.innerHTML = `Gotowe ✓ Alert włączony. <button class="linkbtn" id="alert-test">Wyślij próbne powiadomienie</button>`;
+    $("#alert-test").onclick = () => testAlert(body.id, body.token);
+  } catch (e) {
+    msg.textContent = `Nie udało się: ${e.message}`;
+  }
+}
+
+async function testAlert(id, token) {
+  const r = await fetch("/api/push/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, token }) });
+  if (!r.ok) alert((await r.json()).detail || "Nie udało się wysłać");
+}
+
+async function removeAlert(id, token) {
+  await fetch("/api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, token }) });
+  saveAlerts(myAlerts().filter(a => a.id !== id));
+}
+
+function renderMyAlerts() {
+  const list = myAlerts();
+  $("#my-alerts-box").hidden = !list.length;
+  $("#my-alerts").innerHTML = list.map(a => `<li><span>🔔 ${esc(a.label)} · PM2.5 &gt; ${a.threshold}</span>
+    <button class="linkbtn" data-test="${a.id}">test</button><button class="linkbtn" data-del="${a.id}">usuń</button></li>`).join("");
+  document.querySelectorAll("#my-alerts [data-test]").forEach(b => {
+    const a = list.find(x => String(x.id) === b.dataset.test); b.onclick = () => testAlert(a.id, a.token);
+  });
+  document.querySelectorAll("#my-alerts [data-del]").forEach(b => {
+    const a = list.find(x => String(x.id) === b.dataset.del); b.onclick = () => removeAlert(a.id, a.token);
+  });
 }
 
 // ------------------------------------------------------------------ statystyki
@@ -770,12 +864,16 @@ function setupUi() {
   $("#time-slider").oninput = e => { if (state.playing) togglePlay(); setFrame(Number(e.target.value)); };
   $("#time-live").onclick = () => { if (state.playing) togglePlay(); setFrame(null); };
   $("#time-play").onclick = togglePlay;
+  $("#alert-origin").onclick = () => state.origin && openAlert(state.origin[1], state.origin[0], (state.originLabel || "").split(",")[0]);
+  $("#alert-close").onclick = () => { $("#alert-modal").hidden = true; };
+  $("#alert-modal").onclick = e => { if (e.target.id === "alert-modal") e.target.hidden = true; };
+  renderMyAlerts();
   $("#search").onsubmit = e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) search(q); };
   $("#panel-toggle").onclick = () => $("#panel").classList.toggle("collapsed");
   $("#stats-open").onclick = openStats;
   $("#stats-close").onclick = () => { $("#stats-modal").hidden = true; };
   $("#stats-modal").onclick = e => { if (e.target.id === "stats-modal") e.target.hidden = true; };
-  document.addEventListener("keydown", e => { if (e.key === "Escape") $("#stats-modal").hidden = true; });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#stats-modal").hidden = true; $("#alert-modal").hidden = true; } });
 }
 
 setupUi();

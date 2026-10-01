@@ -38,6 +38,7 @@ class State:
 
 
 state = State()
+AFTER_COLLECT = []
 _job_lock = threading.Lock()
 
 # Gotowe odpowiedzi dla strony, przeliczane po każdym przebiegu.
@@ -223,6 +224,11 @@ def job_collect():
     pressure_trend(now)
     national_profile()
     job_flags()
+    for hook in AFTER_COLLECT:      # np. alerty — rejestrowane w main.py (bez importu w kółko)
+        try:
+            hook()
+        except Exception as e:  # noqa: BLE001
+            log(f"po odczytach: {e}")
     return ok, nodata + fail
 
 

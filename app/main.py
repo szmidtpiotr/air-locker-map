@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api_v1, apikeys, collector, config, db, sources, surface
+from . import alerts, api_v1, apikeys, collector, config, db, sources, surface
 from .quality import FLAG_LABELS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -30,7 +30,7 @@ app = FastAPI(title="air-locker-map", docs_url=None, redoc_url=None, openapi_url
 # MapLibre potrzebuje workerów z blob: i kafelków/fontów z OpenFreeMap; style inline są w dymkach.
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data: blob: https://tiles.openfreemap.org; "
-       "connect-src 'self' https://tiles.openfreemap.org; worker-src blob:; child-src blob:; "
+       "connect-src 'self' https://tiles.openfreemap.org; worker-src 'self' blob:; child-src blob:; manifest-src 'self'; "
        "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
@@ -61,6 +61,8 @@ def startup():
     # przebiegi przerwane restartem usługi nie mają końca — zamykamy je, żeby nie wisiały jako „trwa”
     db.write("UPDATE runs SET finished=started, note='przerwane (restart usługi)' WHERE finished IS NULL")
     collector.build_cache()  # od razu po starcie, inaczej API przez kilka sekund zwraca 404
+    alerts.start()
+    collector.AFTER_COLLECT.append(alerts.evaluate_all)
     collector.start_scheduler()
 
 
@@ -304,6 +306,88 @@ def api_compare():
                         headers={"Cache-Control": "max-age=600"})
 
 
+_sub_hits = defaultdict(deque)
+
+
+def _sub_limit(request: Request, per_hour=10):
+    now, q = time.time(), _sub_hits[client_ip(request)]
+    while q and q[0] < now - 3600:
+        q.popleft()
+    if len(q) >= per_hour:
+        raise HTTPException(429, "Za dużo prób — spróbuj za godzinę")
+    q.append(now)
+
+
+@app.get("/api/alerts/config")
+def api_alerts_config():
+    return {"telegram_bot": alerts.tg_bot_name(), "thresholds": alerts.THRESHOLDS,
+            "radius_km": alerts.RADIUS_KM, "push_key": alerts.vapid_public_key()}
+
+
+@app.post("/api/push/subscribe")
+async def api_push_subscribe(request: Request):
+    _sub_limit(request)
+    try:
+        b = await request.json()
+        sub = b["subscription"]
+        endpoint = str(sub["endpoint"])
+        keys = {"p256dh": str(sub["keys"]["p256dh"])[:200], "auth": str(sub["keys"]["auth"])[:100]}
+        lat, lon, thr = float(b["lat"]), float(b["lon"]), float(b["threshold"])
+        label = " ".join(str(b.get("label", "")).split())[:60]
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "Zły format") from None
+    if not endpoint.startswith("https://") or len(endpoint) > 600:
+        raise HTTPException(400, "Zły adres powiadomień")
+    if not (48 < lat < 56 and 13 < lon < 25) or thr not in alerts.THRESHOLDS:
+        raise HTTPException(400, "Zła lokalizacja albo próg")
+    if db.q1("SELECT COUNT(*) AS n FROM push_subs WHERE ip=?", (client_ip(request),))["n"] >= 10:
+        raise HTTPException(429, "Za dużo alertów z tego adresu")
+    sid, token = alerts.push_subscribe({"endpoint": endpoint, "keys": keys}, lat, lon, thr, label, client_ip(request))
+    return {"id": sid, "token": token}
+
+
+async def _own_sub(request: Request):
+    try:
+        b = await request.json()
+        row = db.q1("SELECT * FROM push_subs WHERE id=?", (int(b["id"]),))
+        ok = row and hmac.compare_digest(row["token"], str(b["token"]))
+    except (KeyError, TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise HTTPException(404, "Nie ma takiego alertu")
+    return row
+
+
+@app.post("/api/push/unsubscribe")
+async def api_push_unsubscribe(request: Request):
+    row = await _own_sub(request)
+    db.write("DELETE FROM push_subs WHERE id=?", (row["id"],))
+    return {"ok": True}
+
+
+@app.post("/api/push/test")
+async def api_push_test(request: Request):
+    _sub_limit(request, per_hour=20)
+    row = await _own_sub(request)
+    ok = alerts.push_send(row, "Test powiadomienia", f"Alert dla „{row['label'] or 'tego miejsca'}” działa. "
+                          f"Próg PM2.5: {row['threshold']:.0f} µg/m³.")
+    if not ok:
+        raise HTTPException(502, "Nie udało się wysłać — przeglądarka mogła wycofać zgodę")
+    return {"ok": True}
+
+
+@app.get("/sw.js")
+def service_worker():
+    # z katalogu głównego, żeby zasięg workera obejmował całą stronę
+    return FileResponse(os.path.join(STATIC, "sw.js"), media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(os.path.join(STATIC, "manifest.webmanifest"), media_type="application/manifest+json")
+
+
 @app.get("/api/stats")
 def api_stats():
     return JSONResponse(collector.compute_stats(), headers={"Cache-Control": "max-age=120"})
@@ -350,6 +434,7 @@ def admin_status():
         SUM(shipx_level IS NOT NULL AND point_id IS NULL AND id_checked_at IS NULL) AS id_pending,
         SUM(shipx_level IS NOT NULL AND elevation IS NULL) AS no_elevation,
         SUM(hidden) AS hidden FROM lockers"""))
+    counts |= dict(db.q1("SELECT (SELECT COUNT(*) FROM push_subs) AS push_subs, (SELECT COUNT(*) FROM tg_subs) AS tg_subs"))
     counts |= dict(db.q1("""SELECT SUM(status='ok') AS reading_ok, SUM(status='no_data') AS reading_no_data,
         SUM(status='error') AS reading_error, SUM(flags!='') AS flagged FROM latest"""))
     flag_counts = {}
