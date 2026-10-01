@@ -56,7 +56,7 @@ tydzień w `~/.cache/paczkomat-powietrze/`. Kolejne trwają kilka sekund.
 
 ## Strona z mapą
 
-Na żywo: **https://powietrze.studio-colorbox.com/** — wszystkie czujniki w Polsce na mapie
+Na żywo: **https://air-locker-map.studio-colorbox.com/** — wszystkie czujniki w Polsce na mapie
 (kropki z grupowaniem, sześciokąty H3, plama), wyszukiwarka adresu i kodu paczkomatu, wykres 24 h,
 oznaczanie podejrzanych czujników (zawieszone, zalane, nierealne, odstające od sąsiadów),
 oficjalne stacje GIOŚ jako odniesienie. Panel `/admin` steruje kolektorem i parametrami.
