@@ -505,7 +505,9 @@ async function openStats() {
       ${st.provinces.map(p => `<tr><td>${esc(p.province)}</td><td class="num">${num(p.sensors)}</td><td class="num"><b style="color:${colorFor("pm25", p.pm25_median)}">${fmt(p.pm25_median)}</b></td></tr>`).join("")}</table>
     <p class="muted">Ostatni odczyt ${ago(st.last_collect)}, odświeżanie co ${st.collect_interval_min} min. W bazie ${num(h.readings)} odczytów
       (surowe trzymamy ${h.raw_days} dni), dzienne średnie od ${esc(h.daily_since || "dziś")} — bezterminowo.
-      Statystyki liczone bez czujników oznaczonych jako podejrzane. Dane nieoficjalne (InPost), stacje GIOŚ jako odniesienie.</p>`;
+      Statystyki liczone bez czujników oznaczonych jako podejrzane. Dane nieoficjalne (InPost), stacje GIOŚ jako odniesienie.
+      Kod projektu: <a href="https://github.com/szmidtpiotr/air-locker-map" target="_blank" rel="noopener noreferrer">github.com/szmidtpiotr/air-locker-map</a>
+      · integracja Home Assistant: <a href="https://github.com/szmidtpiotr/ha-air-locker-map" target="_blank" rel="noopener noreferrer">ha-air-locker-map</a>.</p>`;
   document.querySelectorAll("#stats-body tr.click").forEach(tr => {
     tr.onclick = () => { $("#stats-modal").hidden = true; openSensor(tr.dataset.name, true); };
   });

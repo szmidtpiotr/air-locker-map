@@ -97,6 +97,8 @@
         unit_of_measurement: "hPa"
         device_class: atmospheric_pressure
         state_class: measurement</pre>
+    <p class="hint">Zamiast YAML-a możesz użyć gotowej integracji HACS:
+      <a href="https://github.com/szmidtpiotr/ha-air-locker-map">github.com/szmidtpiotr/ha-air-locker-map</a>.</p>
     <p class="hint">W <code>secrets.yaml</code>: <code>air_locker_map_key: alm_…</code>.
       Konkretny paczkomat zamiast „najbliższego”: <code>resource: https://…/api/v1/sensors/KAP02M</code>
       i <code>value_template: "{{ value_json.measurements.pm25 }}"</code>.</p>
