@@ -65,13 +65,21 @@ Kod w `app/` (FastAPI + SQLite, kolektor w tym samym procesie), wdrożenie `depl
 na kontener Debiana (`/opt/air-locker-map`, usługa `air-locker-map.service`, port 8080).
 Pierwsze wdrożenie generuje hasło panelu i wypisuje je raz na ekran.
 
+### API i Home Assistant
+
+- Dokumentacja API: **https://air-locker-map.studio-colorbox.com/api** — `/api/v1/...` (czujniki, najbliższe do punktu
+  albo do dowolnego paczkomatu, historia, dzienne średnie, statystyki).
+- **API wymaga klucza** (nagłówek `X-API-Key`). Klucze wydaje i unieważnia administrator w panelu `/admin` → Klucze API;
+  każdy ma własny limit zapytań, unieważnienie jednego nie rusza pozostałych. Sama mapa jest publiczna.
+- Integracja dla Home Assistanta (HACS): **[szmidtpiotr/ha-air-locker-map](https://github.com/szmidtpiotr/ha-air-locker-map)**.
+
 ### Bezpieczeństwo
 
 - Dane z ShipX, GIOŚ i Nominatim traktowane jako obce: escapowane przed wstawieniem do HTML-a, linki tylko do `inpost.pl`.
 - Nagłówki: CSP (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`; bez nagłówka `server`.
 - Panel admina: hasło (scrypt), sesja w podpisanym ciasteczku `HttpOnly` + `SameSite=Strict` (+ `Secure` za HTTPS),
-  5 nieudanych prób na 10 minut na IP. Za reverse proxy panel warto dodatkowo ograniczyć do sieci lokalnej
-  (`allow <LAN>; deny all;` na `^/(admin|api/admin/)`) — tak działa wersja na żywo.
+  5 nieudanych prób na 10 minut na IP. W wersji na żywo przed panelem stoi dodatkowo Authelia (2FA z internetu).
+- Klucze API przechowywane jako SHA-256, pełny klucz widoczny tylko przy tworzeniu.
 - Wyszukiwarka adresów: 20 zapytań/min na IP, do Nominatim najwyżej 1 zapytanie/s (zasady usługi).
 - Uvicorn ufa `X-Forwarded-For` tylko od adresu proxy (`--forwarded-allow-ips`), więc limity liczą prawdziwe IP.
 
