@@ -207,3 +207,16 @@ def geocode(query):
            + urllib.parse.quote(query))
     res = json.loads(http(url))
     return [dict(lat=float(r["lat"]), lon=float(r["lon"]), label=r["display_name"]) for r in res]
+
+
+# --- Open-Meteo: wiatr na siatce
+
+def wind_grid(points):
+    """points: lista (lat, lon). Zwraca listę słowników speed/gust [m/s], direction [° skąd wieje], ts."""
+    lat = ",".join(f"{a:.2f}" for a, _ in points)
+    lon = ",".join(f"{o:.2f}" for _, o in points)
+    d = json.loads(http("https://api.open-meteo.com/v1/forecast?current=wind_speed_10m,wind_direction_10m,"
+                        f"wind_gusts_10m&wind_speed_unit=ms&latitude={lat}&longitude={lon}", timeout=40))
+    d = d if isinstance(d, list) else [d]
+    return [{"speed": x["current"]["wind_speed_10m"], "gust": x["current"]["wind_gusts_10m"],
+             "direction": x["current"]["wind_direction_10m"], "ts": x["current"]["time"]} for x in d]

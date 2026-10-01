@@ -6,6 +6,7 @@ przebiegu w trakcie pierwszego i nie podwoił ruchu do InPostu.
 import collections
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -14,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 import h3
 
 from . import db, sources
-from .quality import WARNING_FLAGS, compute_flags, sea_level_pressure
+from .quality import WARNING_FLAGS, compute_flags, distance_km, sea_level_pressure
 
 DATA_DIR = os.path.dirname(db.DB_PATH)
 SITEMAP_CACHE = os.path.join(DATA_DIR, "sitemap-urls.txt")
@@ -219,8 +220,45 @@ def job_collect():
     db.write("DELETE FROM readings WHERE ts < ?", (cutoff,))
     log(f"odczyty: koniec — ok {ok}, brak danych {nodata}, błędy {fail}")
     aggregate_daily(now)
+    pressure_trend(now)
+    national_profile()
     job_flags()
     return ok, nodata + fail
+
+
+def pressure_trend(now):
+    """Zmiana ciśnienia n.p.m. względem przebiegu sprzed ok. 3 h (okno 2,5–3,5 h). Rośnie = wyż nadchodzi."""
+    prev = db.q1("SELECT ts FROM readings WHERE ts BETWEEN ? AND ? GROUP BY ts ORDER BY ABS(ts - ?) LIMIT 1",
+                 (now - 3.5 * 3600, now - 2.5 * 3600, now - 3 * 3600))
+    if not prev:
+        db.write("UPDATE latest SET pressure_trend=NULL")
+        return
+    db.write("""
+        UPDATE latest SET pressure_trend = (
+            SELECT ROUND(latest.pressure_sl - r.pressure_sl, 1) FROM readings r
+            WHERE r.name = latest.name AND r.ts = ? AND r.pressure_sl IS NOT NULL)""", (prev["ts"],))
+
+
+def job_wind():
+    """Wiatr z Open-Meteo na siatce co 0,75° (ok. 130 punktów = tyle „wywołań” w limicie darmowym)."""
+    pts = [(round(la, 2), round(lo, 2)) for la in _frange(49.0, 54.9, 0.75) for lo in _frange(14.2, 24.2, 0.75)]
+    rows = []
+    for i in range(0, len(pts), 100):
+        chunk = pts[i:i + 100]
+        for (la, lo), w in zip(chunk, sources.wind_grid(chunk)):
+            rows.append((la, lo, w["speed"], w["gust"], w["direction"], w["ts"]))
+    db.write("DELETE FROM wind")
+    db.write_many("INSERT INTO wind(lat, lon, speed, gust, direction, ts) VALUES(?,?,?,?,?,?)", rows)
+    log(f"wiatr: {len(rows)} punktów siatki")
+    build_cache()
+    return len(rows), 0
+
+
+def _frange(a, b, step):
+    x = a
+    while x <= b + 1e-9:
+        yield x
+        x += step
 
 
 def aggregate_daily(now=None):
@@ -301,8 +339,21 @@ def compute_stats():
         trend[-1]["vals"].append(r["pm25_avg"])
     trend = [{"day": d["day"], "pm25_median": _median(d["vals"]), "sensors": len(d["vals"])} for d in trend]
 
+    city = {r["name"]: r["city"] for r in db.q("SELECT name, city FROM lockers WHERE shipx_level IS NOT NULL")}
+    by_city = collections.defaultdict(list)
+    for p in clean:
+        if p["pm25"] is not None and city.get(p["name"]):
+            by_city[city[p["name"]]].append(p["pm25"])
+    cities = [{"city": c, "sensors": len(v), "pm25_median": _median(v)} for c, v in by_city.items() if len(v) >= 5]
+    cities.sort(key=lambda x: -(x["pm25_median"] or 0))
+
     data = {
         "updated": int(time.time()),
+        "cities_worst": cities[:10],
+        "cities_best": cities[::-1][:10],
+        "cities_ranked": len(cities),
+        "profile": cache.get("profile"),
+        "compare": (cache.get("compare") or {}).get("summary"),
         "last_collect": last["finished"] if last else None,
         "collect_interval_min": s["collect_interval_min"],
         "lockers_total": counts["lockers"],
@@ -325,6 +376,137 @@ def compute_stats():
     }
     stats_cache.update(at=time.time(), data=data)
     return data
+
+
+def sensor_profile(name):
+    """Profil dobowy czujnika: średnie PM2.5/PM10 dla każdej godziny doby, osobno dni robocze i weekend."""
+    pm_max = db.setting("pm_max")
+    rows = db.q("""SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER) AS h,
+                          strftime('%w', ts, 'unixepoch', 'localtime') IN ('0', '6') AS weekend,
+                          AVG(pm25) AS pm25, AVG(pm10) AS pm10, COUNT(*) AS n
+                   FROM readings WHERE name = ? AND pm25 <= ? GROUP BY h, weekend""", (name, pm_max))
+    days = db.q1("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) AS d FROM readings WHERE name = ?", (name,))
+    out = {"days": days["d"], "workdays": [None] * 24, "weekend": [None] * 24, "all": [None] * 24}
+    acc = collections.defaultdict(lambda: [0.0, 0])
+    for r in rows:
+        out["weekend" if r["weekend"] else "workdays"][r["h"]] = round(r["pm25"], 1)
+        acc[r["h"]][0] += r["pm25"] * r["n"]
+        acc[r["h"]][1] += r["n"]
+    for h, (tot, n) in acc.items():
+        out["all"][h] = round(tot / n, 1)
+    return out
+
+
+def national_profile():
+    """Profil dobowy całej Polski (średnia z czujników bez nierealnych odczytów) — liczony co godzinę."""
+    pm_max = db.setting("pm_max")
+    rows = db.q("""SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER) AS h,
+                          ROUND(AVG(pm25), 1) AS pm25, COUNT(DISTINCT ts) AS frames
+                   FROM readings WHERE pm25 <= ? GROUP BY h ORDER BY h""", (pm_max,))
+    prof = [None] * 24
+    for r in rows:
+        prof[r["h"]] = r["pm25"]
+    days = db.q1("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) AS d FROM readings")
+    cache["profile"] = {"pm25": prof, "days": days["d"]}
+
+
+def compare_gios(radius_km=3.0):
+    """Paczkomaty kontra stacje GIOŚ: pary stacja ↔ czujniki do `radius_km`, dopasowanie godzinowe.
+
+    GIOŚ podaje średnie godzinowe; odczyt paczkomatu przypisujemy do godziny, w której wypadł.
+    Wynik: obciążenie (paczkomat − GIOŚ), stosunek, błąd bezwzględny i korelacja — osobno dla
+    starszych i nowszych czujników."""
+    pm_max = db.setting("pm_max")
+    stations = db.q("SELECT station_id, name, city, lat, lon FROM gios")
+    suspect = {f["properties"]["name"] for f in (cache["sensors"] or {}).get("features", []) if f["properties"]["suspect"]}
+    sensors = [r for r in db.q("SELECT l.name, k.lat, k.lon, l.gen FROM latest l JOIN lockers k USING(name) "
+                               "WHERE l.gen IS NOT NULL") if r["name"] not in suspect]
+    gios_hours = collections.defaultdict(dict)
+    for r in db.q("SELECT station_id, ts, pm25 FROM gios_readings WHERE pm25 IS NOT NULL"):
+        gios_hours[r["station_id"]][r["ts"][:13]] = r["pm25"]     # klucz: "YYYY-MM-DD HH"
+    pairs, per_station = collections.defaultdict(list), []
+    for st in stations:
+        near = [x for x in sensors if distance_km(st["lat"], st["lon"], x["lat"], x["lon"]) <= radius_km]
+        hours = gios_hours.get(st["station_id"])
+        if not near or not hours:
+            continue
+        st_pairs = []
+        for x in near:
+            for r in db.q("SELECT strftime('%Y-%m-%d %H', ts, 'unixepoch', 'localtime') AS hh, pm25 FROM readings "
+                          "WHERE name = ? AND pm25 IS NOT NULL AND pm25 <= ?", (x["name"], pm_max)):
+                g = hours.get(r["hh"])
+                if g is not None:
+                    pairs[x["gen"]].append((r["pm25"], g))
+                    st_pairs.append((r["pm25"], g))
+        if st_pairs:
+            per_station.append({"station_id": st["station_id"], "name": st["name"], "city": st["city"],
+                                "sensors": len(near), **_pair_stats(st_pairs)})
+    summary = {gen: _pair_stats(p) for gen, p in pairs.items() if p}
+    summary["all"] = _pair_stats([x for p in pairs.values() for x in p]) if pairs else None
+    summary["stations"] = len(per_station)
+    summary["radius_km"] = radius_km
+    cache["compare"] = {"summary": summary, "stations": sorted(per_station, key=lambda s: -s["n"])}
+
+
+def _pair_stats(pairs):
+    a = [p for p, _ in pairs]
+    g = [q for _, q in pairs]
+    n = len(pairs)
+    ma, mg = sum(a) / n, sum(g) / n
+    cov = sum((x - ma) * (y - mg) for x, y in pairs)
+    va, vg = sum((x - ma) ** 2 for x in a), sum((y - mg) ** 2 for y in g)
+    r = cov / math.sqrt(va * vg) if va > 0 and vg > 0 else None
+    return {"n": n, "locker_mean": round(ma, 1), "gios_mean": round(mg, 1), "bias": round(ma - mg, 1),
+            "ratio": round(ma / mg, 2) if mg else None,
+            "mae": round(sum(abs(x - y) for x, y in pairs) / n, 1), "r": round(r, 2) if r is not None else None}
+
+
+def network_health():
+    """Zdrowie sieci dla panelu admina: per województwo — czujniki, działające, flagi, braki danych i ID."""
+    rows = db.q("""SELECT k.province AS province, COUNT(*) AS sensors,
+                          SUM(k.point_id IS NULL) AS no_id,
+                          SUM(l.status = 'ok') AS ok,
+                          SUM(l.status IN ('no_data', 'error')) AS no_data,
+                          SUM(l.flags LIKE '%stuck%') AS stuck, SUM(l.flags LIKE '%dead%') AS dead,
+                          SUM(l.flags LIKE '%absurd%') AS absurd, SUM(l.flags LIKE '%outlier%') AS outlier,
+                          SUM(l.flags LIKE '%stale%') AS stale, SUM(l.flags LIKE '%wet%') AS wet
+                   FROM lockers k LEFT JOIN latest l USING(name)
+                   WHERE k.shipx_level IS NOT NULL GROUP BY k.province""")
+    out = []
+    for r in rows:
+        d = dict(r)
+        broken = (d["stuck"] or 0) + (d["dead"] or 0) + (d["absurd"] or 0) + (d["outlier"] or 0) + (d["stale"] or 0)
+        d["broken"] = broken
+        d["broken_pct"] = round(100 * broken / d["sensors"], 1) if d["sensors"] else 0
+        out.append(d)
+    return sorted(out, key=lambda x: -x["broken_pct"])
+
+
+ABROAD = ("FR", "IT", "ES", "PT", "GB", "BE", "NL", "LU")
+
+
+def job_abroad():
+    """Raz w miesiącu: czy za granicą pojawiły się paczkomaty z czujnikiem (docs/zagranica.md: na 10.2026 — zero)."""
+    found = {}
+    for cc in ABROAD:
+        n = 0
+        for page in (1, 2, 3):
+            try:
+                d = json.loads(sources.http(f"https://api-global-points.easypack24.net/v1/points?country={cc}"
+                                            f"&type=parcel_locker&per_page=500&page={page}&fields=name,air_index_level"))
+            except Exception as e:  # noqa: BLE001
+                log(f"zagranica {cc}: {e}")
+                break
+            n += sum(1 for i in d.get("items", []) if i.get("air_index_level"))
+            if page >= d.get("total_pages", 0):
+                break
+            time.sleep(0.6)
+        found[cc] = n
+    total = sum(found.values())
+    log(f"zagranica: czujniki w próbce {found}" + (" — POJAWIŁY SIĘ!" if total else ""))
+    db.write("INSERT INTO settings(key, value) VALUES('abroad_last', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+             (json.dumps({"ts": int(time.time()), "found": found}),))
+    return total, 0
 
 
 def job_flags():
@@ -363,6 +545,9 @@ def job_gios():
             continue
         if not vals:
             continue
+        if ts:
+            db.write("INSERT OR REPLACE INTO gios_readings(station_id, ts, pm25, pm10) VALUES(?,?,?,?)",
+                     (st["station_id"], ts, vals.get("PM2.5"), vals.get("PM10")))
         db.write("INSERT INTO gios(station_id, name, city, lat, lon, pm25, pm10, ts, updated) VALUES(?,?,?,?,?,?,?,?,?) "
                  "ON CONFLICT(station_id) DO UPDATE SET pm25=excluded.pm25, pm10=excluded.pm10, ts=excluded.ts, "
                  "updated=excluded.updated",
@@ -370,7 +555,12 @@ def job_gios():
                   ts, now))
         ok += 1
         time.sleep(0.2)
+    db.write("DELETE FROM gios_readings WHERE ts < datetime('now', 'localtime', ?)", (f"-{db.setting('history_days')} days",))
     log(f"GIOŚ: stacji z PM {ok}")
+    try:
+        compare_gios()
+    except Exception as e:  # noqa: BLE001
+        log(f"porównanie z GIOŚ: {e}")
     build_cache()
     return ok, 0
 
@@ -382,6 +572,8 @@ JOBS = {
     "collect": ("Odczyty czujników", job_collect),
     "flags": ("Przeliczenie flag", job_flags),
     "gios": ("Stacje GIOŚ", job_gios),
+    "wind": ("Wiatr (Open-Meteo)", job_wind),
+    "abroad": ("Czujniki za granicą (próbka)", job_abroad),
 }
 
 
@@ -423,7 +615,7 @@ def build_cache():
     rows = db.q("""
         SELECT k.name, k.lat, k.lon, k.city, k.street, k.building, k.post_code, k.description, k.page_url,
                k.point_id, k.elevation, k.hidden, l.ts, l.status, l.pm1, l.pm25, l.pm4, l.pm10, l.pressure,
-               l.pressure_sl, l.humidity, l.temperature, l.level, l.gen, l.changed_at, l.flags
+               l.pressure_sl, l.pressure_trend, l.humidity, l.temperature, l.level, l.gen, l.changed_at, l.flags
         FROM latest l JOIN lockers k USING(name) WHERE l.pm25 IS NOT NULL OR l.pressure IS NOT NULL""")
     feats = []
     for r in rows:
@@ -431,7 +623,7 @@ def build_cache():
         if r["hidden"]:
             flags.append("hidden")
         props = {k: r[k] for k in ("name", "city", "description", "page_url", "point_id", "ts", "status", "pm1",
-                                   "pm25", "pm4", "pm10", "pressure", "pressure_sl", "humidity", "temperature",
+                                   "pm25", "pm4", "pm10", "pressure", "pressure_sl", "pressure_trend", "humidity", "temperature",
                                    "level", "gen", "changed_at", "elevation")}
         props["address"] = " ".join(x for x in (r["street"], r["building"]) if x) + f", {r['post_code']} {r['city']}"
         props["flags"] = flags
@@ -444,26 +636,71 @@ def build_cache():
     g = db.q("SELECT * FROM gios WHERE pm25 IS NOT NULL OR pm10 IS NOT NULL")
     cache["gios"] = {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
-         "properties": {"name": r["name"], "city": r["city"], "pm25": r["pm25"], "pm10": r["pm10"], "ts": r["ts"]}}
+         "properties": {"station_id": r["station_id"], "name": r["name"], "city": r["city"], "pm25": r["pm25"],
+                        "pm10": r["pm10"], "ts": r["ts"]}}
         for r in g]}
+    cache["wind"] = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
+         "properties": {"speed": r["speed"], "gust": r["gust"], "direction": r["direction"], "ts": r["ts"]}}
+        for r in db.q("SELECT * FROM wind")]}
     cache["built"] = int(time.time())
     stats_cache["at"] = 0
 
 
-METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "humidity", "temperature")
+METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "pressure_trend", "humidity", "temperature")
 
 
-def hex_layer(res, metric, include_suspect):
-    key = (res, metric, include_suspect)
+HISTORY_METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "humidity", "temperature")  # są w tabeli readings
+
+
+def metric_points(metric, ts=None, include_suspect=False):
+    """(lat, lon, wartość) dla wielkości — z bieżącego stanu albo z przebiegu o czasie `ts` (suwak czasu).
+    Dla przeszłości podejrzane odfiltrowujemy wg dzisiejszych flag (historycznych nie trzymamy)."""
+    feats = (cache["sensors"] or {}).get("features", [])
+    if ts is None:
+        return [(f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0], f["properties"][metric])
+                for f in feats if f["properties"].get(metric) is not None
+                and (include_suspect or not f["properties"]["suspect"])]
+    if metric not in HISTORY_METRICS:
+        return []
+    skip = set() if include_suspect else {f["properties"]["name"] for f in feats if f["properties"]["suspect"]}
+    rows = db.q(f"SELECT r.name, k.lat, k.lon, r.{metric} AS v FROM readings r JOIN lockers k USING(name) "
+                f"WHERE r.ts = ? AND r.{metric} IS NOT NULL", (ts,))
+    return [(r["lat"], r["lon"], r["v"]) for r in rows if r["name"] not in skip]
+
+
+_frames_memo = {}
+
+
+def frames(hours=24):
+    """Pełne przebiegi z ostatnich godzin (pomijamy przerwane, z małą liczbą odczytów). Pamięć 60 s."""
+    memo = _frames_memo.get(hours)
+    if memo and time.time() - memo[0] < 60:
+        return memo[1]
+    rows = db.q("SELECT ts, COUNT(*) AS n FROM readings WHERE ts >= ? GROUP BY ts HAVING n > 500 ORDER BY ts",
+                (int(time.time()) - hours * 3600 - 1800,))
+    out = [{"ts": r["ts"], "sensors": r["n"]} for r in rows]
+    _frames_memo[hours] = (time.time(), out)
+    return out
+
+
+def frame_values(ts, metric):
+    key = ("frame", ts, metric)
+    if key not in cache.setdefault("frames", {}):
+        if len(cache["frames"]) > 200:
+            cache["frames"].clear()
+        rows = db.q(f"SELECT name, {metric} AS v FROM readings WHERE ts = ? AND {metric} IS NOT NULL", (ts,))
+        cache["frames"][key] = {r["name"]: r["v"] for r in rows}
+    return cache["frames"][key]
+
+
+def hex_layer(res, metric, include_suspect, ts=None):
+    key = (res, metric, include_suspect, ts)
     if key in cache["hex"]:
         return cache["hex"][key]
     cells = collections.defaultdict(list)
-    for f in (cache["sensors"] or {}).get("features", []):
-        p = f["properties"]
-        if p.get(metric) is None or (p["suspect"] and not include_suspect):
-            continue
-        lon, lat = f["geometry"]["coordinates"]
-        cells[h3.latlng_to_cell(lat, lon, res)].append(p[metric])
+    for lat, lon, v in metric_points(metric, ts, include_suspect):
+        cells[h3.latlng_to_cell(lat, lon, res)].append(v)
     feats = []
     for cell, vals in cells.items():
         vals.sort()
@@ -474,6 +711,8 @@ def hex_layer(res, metric, include_suspect):
         feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [ring]},
                       "properties": {"value": round(med, 1), "count": len(vals)}})
     out = {"type": "FeatureCollection", "features": feats}
+    if len(cache["hex"]) > 100:
+        cache["hex"].clear()
     cache["hex"][key] = out
     return out
 
@@ -492,11 +731,18 @@ def next_runs():
         "lockers": _last_finished("lockers") + s["lockers_refresh_days"] * 86400,
         "collect": _last_finished("collect") + s["collect_interval_min"] * 60,
         "gios": _last_finished("gios") + 3600 if s["gios_layer"] else None,
+        "wind": _last_finished("wind") + 3600,
+        "abroad": _last_finished("abroad") + 30 * 86400,
     }
 
 
 def scheduler_loop():
     time.sleep(5)
+    for fn in (national_profile, compare_gios):
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            log(f"start: {fn.__name__}: {e}")
     while True:
         try:
             if db.setting("collector_enabled") and not state.job:
@@ -515,6 +761,10 @@ def scheduler_loop():
                     run_job("collect")
                 elif nxt["gios"] and now >= nxt["gios"]:
                     run_job("gios")
+                elif now >= nxt["wind"]:
+                    run_job("wind")
+                elif now >= nxt["abroad"]:
+                    run_job("abroad")
         except Exception as e:  # noqa: BLE001
             log(f"harmonogram: {e}")
         time.sleep(20)

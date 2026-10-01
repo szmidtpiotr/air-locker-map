@@ -81,6 +81,14 @@ button.icon { border: 0; background: none; font-size: 20px; line-height: 1; padd
 .pop svg { display: block; width: 100%; height: 56px; margin-top: 8px; }
 .pop .chart-label { color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; }
 
+/* suwak czasu */
+.time-label { text-transform: none; letter-spacing: 0; color: var(--fg); font-weight: 600; margin-left: 6px; }
+.time-row { display: flex; align-items: center; gap: 8px; }
+.time-row input[type=range] { flex: 1; accent-color: var(--fg); }
+.icon-btn { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line); background: #fff; color: var(--fg); padding: 0; line-height: 1; }
+.chip-btn { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 4px 10px; color: var(--fg); font-size: 12px; }
+.chip-btn.active { background: var(--fg); color: #fff; border-color: var(--fg); }
+
 /* podsumowanie i statystyki */
 .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
 .summary div { background: #f5f6f8; border-radius: 8px; padding: 6px 8px; }

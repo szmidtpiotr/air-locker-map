@@ -13,6 +13,9 @@ const METRICS = {
   pressure_sl: { label: "Ciśnienie", unit: "hPa", kind: "ramp", digits: 0,
                  ramp: ["#3b4cc0", "#8db0fe", "#f2f2f2", "#f49a7b", "#b40426"],
                  note: "Zredukowane do poziomu morza — porównywalne między miastami." },
+  pressure_trend: { label: "Trend ciśnienia", unit: "hPa/3 h", kind: "ramp", digits: 1, fixed: [-4, 4], live: true,
+                    ramp: ["#5e3c99", "#b2abd2", "#f7f7f7", "#fdb863", "#e66101"],
+                    note: "Zmiana ciśnienia w ciągu ~3 h. Spada (fiolet) — nadchodzi niż albo front, często deszcz i wiatr; rośnie (pomarańcz) — wyż, poprawa pogody." },
   humidity: { label: "Wilgotność", unit: "%", kind: "ramp", digits: 0, fixed: [20, 100],
               ramp: ["#a6611a", "#dfc27d", "#f5f5f5", "#80cdc1", "#018571"],
               note: "Mierzona w obudowie paczkomatu." },
@@ -26,6 +29,7 @@ const SURFACE_CORNERS = [[13.9, 55.05], [24.4, 55.05], [24.4, 48.85], [13.9, 48.
 const TRANSPARENT_PNG = "/static/empty.png";  // pusty obraz startowy; data: blokuje CSP (connect-src)
 
 const state = {
+  frames: [], frameIdx: null, frameValues: null, playing: null, showWind: false, showIsobars: false,
   cfg: null, data: null, metric: "pm25", view: "points",
   showSuspect: false, showGios: true, domains: {}, hexRes: null, searchMarker: null, origin: null,
 };
@@ -131,8 +135,16 @@ function ago(ts) {
   return h < 48 ? `${h} h temu` : `${Math.round(h / 24)} dni temu`;
 }
 
+function frameTs() {
+  return state.frameIdx === null ? null : state.frames[state.frameIdx]?.ts ?? null;
+}
+
+// W trybie historii podmieniamy wartość wybranej wielkości na tę z klatki; reszta (adres, flagi) z bieżących danych.
 function visibleFeatures() {
-  return state.data.features.filter(f => state.showSuspect || !f.properties.suspect);
+  const feats = state.data.features.filter(f => state.showSuspect || !f.properties.suspect);
+  if (!state.frameValues) return feats;
+  const fv = state.frameValues, metric = state.metric;
+  return feats.map(f => ({ ...f, properties: { ...f.properties, [metric]: fv[f.properties.name] ?? null } }));
 }
 
 // ------------------------------------------------------------------ warstwy
@@ -203,6 +215,28 @@ function setupLayers() {
     },
   });
 
+  // izobary: linie + podpisy wzdłuż linii
+  map.addSource("isobars", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({ id: "isobars", type: "line", source: "isobars",
+    paint: { "line-color": "#1d2330", "line-width": ["case", ["==", ["%", ["get", "value"], 4], 0], 1.6, 0.8], "line-opacity": 0.7 } });
+  map.addLayer({ id: "isobars-label", type: "symbol", source: "isobars",
+    layout: { "symbol-placement": "line", "symbol-spacing": 280, "text-field": ["concat", ["to-string", ["get", "value"]], " hPa"],
+              "text-size": 11, "text-font": ["Noto Sans Regular"] },
+    paint: { "text-color": "#1d2330", "text-halo-color": "rgba(255,255,255,.9)", "text-halo-width": 1.5 } });
+
+  // wiatr: strzałka narysowana na canvasie (SDF — kolor nadajemy stylem), obrót = kierunek, w który wieje
+  map.addImage("wind-arrow", windArrowImage(), { sdf: true });
+  map.addSource("wind", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({ id: "wind", type: "symbol", source: "wind",
+    layout: { "icon-image": "wind-arrow", "icon-rotate": ["+", ["get", "direction"], 180], "icon-rotation-alignment": "map",
+              "icon-allow-overlap": true, "icon-ignore-placement": true,
+              "icon-size": ["interpolate", ["linear"], ["get", "speed"], 0, 0.35, 5, 0.6, 12, 0.95, 20, 1.2],
+              "text-field": ["concat", ["to-string", ["round", ["get", "speed"]]], " m/s"], "text-size": 10,
+              "text-font": ["Noto Sans Regular"], "text-offset": [0, 1.6], "text-optional": true },
+    paint: { "icon-color": ["interpolate", ["linear"], ["get", "speed"], 0, "#64748b", 6, "#0f766e", 12, "#b45309", 18, "#b91c1c"],
+             "text-color": "#334155", "text-halo-color": "rgba(255,255,255,.9)", "text-halo-width": 1,
+             "text-opacity": ["step", ["zoom"], 0, 7, 1] } });
+
   for (const id of ["points", "gios", "hex-fill", "clusters"]) {
     map.on("mouseenter", id, () => { map.getCanvas().style.cursor = "pointer"; });
     map.on("mouseleave", id, () => { map.getCanvas().style.cursor = ""; });
@@ -254,13 +288,22 @@ function render() {
     map.setPaintProperty("points", "circle-radius", ["interpolate", ["linear"], ["zoom"], 6, 5, 12, 8, 16, 11]);
   }
 
-  const giosOn = state.showGios && (metric === "pm25" || metric === "pm10");
+  const giosOn = state.showGios && (metric === "pm25" || metric === "pm10") && state.frameIdx === null;
   vis("gios", giosOn);
   // stacje, które danej wielkości w ogóle nie mierzą, nie mają być szarymi kropkami „bez danych”
   map.setFilter("gios", ["!=", ["get", metric], null]);
   map.setPaintProperty("gios", "circle-color",
     ["case", ["==", ["get", metric], null], SUSPECT_COLOR, colorExpr(metric, ["get", metric])]);
 
+  const pressureMetric = metric === "pressure_sl" || metric === "pressure_trend";
+  vis("isobars", state.showIsobars);
+  vis("isobars-label", state.showIsobars);
+  vis("wind", state.showWind);
+  if (state.showIsobars) refreshIsobars();
+  if (state.showWind && !state.windLoaded) {
+    state.windLoaded = true;
+    fetch("/api/wind").then(r => r.json()).then(d => map.getSource("wind").setData(d));
+  }
   if (v === "hex") refreshHex(true);
   if (v === "heat") refreshSurface();
   document.querySelectorAll("#views button").forEach(b => b.classList.toggle("active", b.dataset.view === state.view));
@@ -277,10 +320,11 @@ function render() {
 async function refreshHex(force = false) {
   const base = state.cfg.hex_resolution;
   const res = Math.max(3, Math.min(8, base + Math.floor((map.getZoom() - 6.5) / 1.5)));
-  const key = `${res}|${state.metric}|${state.showSuspect}`;
+  const ts = frameTs();
+  const key = `${res}|${state.metric}|${state.showSuspect}|${ts}`;
   if (!force && key === state.hexRes) return;
   state.hexRes = key;
-  const r = await fetch(`/api/hex?res=${res}&metric=${state.metric}&suspect=${state.showSuspect}`);
+  const r = await fetch(`/api/hex?res=${res}&metric=${state.metric}&suspect=${state.showSuspect}${ts ? `&ts=${ts}` : ""}`);
   map.getSource("hex").setData(await r.json());
   map.setPaintProperty("hex-fill", "fill-color", colorExpr(state.metric, ["get", "value"]));
 }
@@ -297,9 +341,14 @@ function surfaceStops(metric) {
   return m.ramp.map((c, i) => [lo + (hi - lo) * i / (m.ramp.length - 1), c]);
 }
 
+function surfaceUrl(metric, ts) {
+  const stops = surfaceStops(metric).map(([v, c]) => `${Math.round(v * 100) / 100}:${c}`).join(",");
+  return `/api/surface.png?metric=${metric}&suspect=${state.showSuspect}&stops=${encodeURIComponent(stops)}` +
+    (ts ? `&ts=${ts}` : `&t=${state.lastCollect || ""}`);
+}
+
 function refreshSurface() {
-  const stops = surfaceStops(state.metric).map(([v, c]) => `${Math.round(v * 100) / 100}:${c}`).join(",");
-  const url = `/api/surface.png?metric=${state.metric}&suspect=${state.showSuspect}&stops=${encodeURIComponent(stops)}&t=${state.lastCollect || ""}`;
+  const url = surfaceUrl(state.metric, frameTs());
   if (url === state.surfaceUrl) return;
   state.surfaceUrl = url;
   map.getSource("surface").updateImage({ url, coordinates: SURFACE_CORNERS });
@@ -324,6 +373,8 @@ function renderLegend() {
   if (state.showGios && (metric === "pm25" || metric === "pm10"))
     html += `<div class="row"><span class="sw" style="background:#fff;border:2.5px solid #1d2330;border-radius:50%"></span>stacja GIOŚ</div>`;
   if (m.note) html += `<div class="note">${m.note}</div>`;
+  if (state.frameIdx !== null && m.live) html += `<div class="note"><b>Ta wielkość nie ma historii</b> — przesuń suwak na „Teraz”.</div>`;
+  if (state.showWind) html += `<div class="note">Strzałki: kierunek, w który wieje wiatr; kolor i wielkość — prędkość (Open-Meteo, co godzinę).</div>`;
   $("#legend").innerHTML = html;
 }
 
@@ -362,11 +413,13 @@ async function openSensor(name, fly = false) {
     <table>${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("")}</table>
     ${warn}${status}
     <div class="chart" data-name="${esc(p.name)}"></div>
+    <div class="profile" data-name="${esc(p.name)}"></div>
     <div class="meta">Odczyt ${ago(p.ts)} · bez zmian od ${ago(p.changed_at)}${p.elevation != null ? ` · ${Math.round(p.elevation)} m n.p.m.` : ""}
     ${safeUrl(p.page_url) ? ` · <a href="${esc(p.page_url)}" target="_blank" rel="noopener noreferrer">strona paczkomatu</a>` : ""}</div>
   </div>`;
   new maplibregl.Popup({ maxWidth: "320px" }).setLngLat(f.geometry.coordinates).setHTML(html).addTo(map);
   drawChart(p.name);
+  drawProfile(p.name);
 }
 
 async function drawChart(name) {
@@ -392,12 +445,34 @@ async function drawChart(name) {
     <div class="chart-label"><span>${m.label}, ostatnie 24 h</span><span>${fmt(y0, m.digits ?? 1)}–${fmt(y1, m.digits ?? 1)} ${m.unit}</span></div>`;
 }
 
+async function drawProfile(name) {
+  const box = [...document.querySelectorAll(".pop .profile")].find(el => el.dataset.name === name);
+  if (!box) return;
+  const r = await fetch(`/api/profile/${encodeURIComponent(name)}`).then(r => r.json()).catch(() => null);
+  if (!r || r.days < 2) {
+    box.innerHTML = `<div class="meta">Profil dobowy (o której godzinie jest najgorzej) pojawi się po 2 dobach zbierania.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="chart-label"><span>PM2.5 o różnych porach dnia</span><span>${r.days} dni</span></div>${profileSvg(r.all, 54)}`;
+}
+
 function openGios(f) {
   const p = f.properties;
   new maplibregl.Popup().setLngLat(f.geometry.coordinates).setHTML(`<div class="pop">
     <h3>Stacja GIOŚ: ${esc(p.name)}</h3><div class="addr">${esc(p.city)}</div>
     <table><tr><td>PM2.5</td><td>${fmt(p.pm25)} µg/m³</td></tr><tr><td>PM10</td><td>${fmt(p.pm10)} µg/m³</td></tr></table>
-    <div class="meta">Pomiar oficjalny, średnia godzinowa · ${esc(p.ts || "–")}</div></div>`).addTo(map);
+    <div class="meta">Pomiar oficjalny, średnia godzinowa · ${esc(p.ts || "–")}</div>
+    <div class="gios-compare" data-id="${Number(p.station_id)}"></div></div>`).addTo(map);
+  fetch("/api/compare").then(r => r.json()).then(c => {
+    const st = (c.stations || []).find(x => x.station_id === Number(p.station_id));
+    const box = document.querySelector(`.gios-compare[data-id="${Number(p.station_id)}"]`);
+    if (!box) return;
+    box.innerHTML = st
+      ? `<div class="warn" style="background:#f0f6ff;color:#1d2330">Paczkomaty do ${c.summary.radius_km} km (${st.sensors}): średnio
+          <b>${fmt(st.locker_mean)}</b> wobec <b>${fmt(st.gios_mean)}</b> µg/m³ ze stacji
+          (różnica ${st.bias > 0 ? "+" : ""}${fmt(st.bias)}, korelacja ${st.r ?? "–"}, ${num(st.n)} par godzinowych).</div>`
+      : `<div class="meta">Brak paczkomatów z czujnikiem w pobliżu tej stacji albo jeszcze za mało wspólnych pomiarów.</div>`;
+  });
 }
 
 // ------------------------------------------------------------------ wyszukiwarka
@@ -423,11 +498,11 @@ async function search(q) {
   }
 }
 
-function goTo(x) {
+function goTo(x, zoom = 12) {
   state.origin = [x.lon, x.lat];
   if (state.searchMarker) state.searchMarker.remove();
   state.searchMarker = new maplibregl.Marker({ color: "#1d2330" }).setLngLat(state.origin).addTo(map);
-  map.flyTo({ center: state.origin, zoom: 12 });
+  map.flyTo({ center: state.origin, zoom });
   renderNearest();
 }
 
@@ -447,6 +522,98 @@ function renderNearest() {
   document.querySelectorAll("#nearest li").forEach(li => { li.onclick = () => openSensor(li.dataset.name, true); });
 }
 
+// ------------------------------------------------------------------ izobary, wiatr
+
+function refreshIsobars() {
+  const ts = frameTs();
+  const key = `${ts}|${state.lastCollect}`;
+  if (key === state.isoKey) return;
+  state.isoKey = key;
+  fetch(`/api/isobars?step=2${ts ? `&ts=${ts}` : `&t=${state.lastCollect || ""}`}`)
+    .then(r => r.json()).then(d => map.getSource("isobars").setData(d));
+}
+
+function windArrowImage() {
+  const size = 48, c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000";
+  g.beginPath();                       // strzałka w górę (północ); obrót robi styl
+  g.moveTo(24, 3); g.lineTo(38, 22); g.lineTo(28, 20); g.lineTo(28, 45);
+  g.lineTo(20, 45); g.lineTo(20, 20); g.lineTo(10, 22); g.closePath();
+  g.fill();
+  return g.getImageData(0, 0, size, size);
+}
+
+// ------------------------------------------------------------------ suwak czasu
+
+const fmtTime = ts => new Date(ts * 1000).toLocaleString("pl-PL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+async function loadFrames() {
+  state.frames = await fetch("/api/frames").then(r => r.json()).catch(() => []);
+  const sl = $("#time-slider");
+  sl.max = Math.max(state.frames.length - 1, 0);
+  if (state.frameIdx === null) sl.value = sl.max;
+  $("#time-box").hidden = state.frames.length < 2;
+  $("#time-hint").textContent = state.frames.length < 24
+    ? `Zebrane klatki: ${state.frames.length} (pełne 24 h będą po dobie zbierania).` : "";
+}
+
+async function setFrame(idx) {
+  const last = state.frames.length - 1;
+  if (idx === null || idx >= last) {      // ostatnia klatka = bieżące dane (z flagami, trendem, GIOŚ)
+    state.frameIdx = null;
+    state.frameValues = null;
+    $("#time-slider").value = last;
+    $("#time-label").textContent = "na żywo";
+  } else {
+    state.frameIdx = idx;
+    const f = state.frames[idx];
+    $("#time-label").textContent = fmtTime(f.ts);
+    if (METRICS[state.metric].live) {      // trend ciśnienia nie ma historii
+      state.frameValues = {};
+    } else {
+      const r = await fetch(`/api/frame?ts=${f.ts}&metric=${state.metric}`).then(r => r.json());
+      if (state.frameIdx !== idx) return;  // użytkownik przesunął suwak dalej
+      state.frameValues = r.values;
+    }
+  }
+  $("#time-live").classList.toggle("active", state.frameIdx === null);
+  state.hexRes = null;
+  render();
+}
+
+function togglePlay() {
+  if (state.playing) {
+    clearInterval(state.playing);
+    state.playing = null;
+    $("#time-play").textContent = "▶";
+    return;
+  }
+  if (state.frames.length < 2) return;
+  let i = state.frameIdx === null ? 0 : state.frameIdx;
+  $("#time-play").textContent = "❚❚";
+  if (state.view === "heat") {             // plamy kolejnych klatek pobieramy z wyprzedzeniem
+    state.frames.forEach(f => { new Image().src = surfaceUrl(state.metric, f.ts); });
+  }
+  const step = () => {
+    setFrame(i);
+    i += 1;
+    if (i >= state.frames.length) togglePlay();
+  };
+  step();
+  state.playing = setInterval(step, 1200);
+}
+
+// #lat=52.23&lon=20.96&z=14 — link z karty HA i do udostępniania konkretnego miejsca
+function applyHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon"));
+  if (!isFinite(lat) || !isFinite(lon) || lat < 48 || lat > 56 || lon < 13 || lon > 25) return;
+  const z = Math.min(Math.max(parseFloat(p.get("z")) || 13, 5), 17);
+  goTo({ lat, lon, label: "" }, z);
+}
+
 // ------------------------------------------------------------------ statystyki
 
 const num = n => (n ?? 0).toLocaleString("pl-PL");
@@ -457,6 +624,20 @@ function renderSummary(st) {
     <div><b>${num(st.sensors_reporting - st.sensors_suspect)}</b><span>czujników działa</span></div>
     <div><b style="color:${cls == null ? "inherit" : INDEX_COLORS[cls]}">${fmt(st.pm25.median)}</b><span>mediana PM2.5 w PL</span></div>
     <div><b>${fmt(st.pressure_sl_median, 0)}</b><span>hPa, mediana</span></div>`;
+}
+
+// 24 słupki (godziny doby), kolor wg indeksu PM2.5
+function profileSvg(values, height = 70) {
+  const vals = values.map(v => (v == null ? null : v));
+  const max = Math.max(...vals.filter(v => v != null), 1);
+  const W = 600, H = height, gap = 3, bw = (W - gap * 23) / 24;
+  const bars = vals.map((v, h) => {
+    if (v == null) return "";
+    const bh = Math.max(2, (H - 14) * v / max);
+    return `<rect x="${(h * (bw + gap)).toFixed(1)}" y="${(H - 14 - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${colorFor("pm25", v)}"><title>${h}:00 — ${fmt(v)} µg/m³</title></rect>`;
+  }).join("");
+  const labels = [0, 6, 12, 18, 23].map(h => `<text x="${(h * (bw + gap) + bw / 2).toFixed(1)}" y="${H - 2}" font-size="10" text-anchor="middle" fill="#667085">${h}</text>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px">${bars}${labels}</svg>`;
 }
 
 function trendSvg(trend) {
@@ -473,6 +654,23 @@ function trendSvg(trend) {
 function sensorRows(list) {
   return list.map(p => `<tr class="click" data-name="${esc(p.name)}"><td>${esc(p.name)}<br><span class="muted">${esc(p.address)}</span></td>
     <td class="num"><b style="color:${colorFor("pm25", p.pm25)}">${fmt(p.pm25)}</b></td><td class="num">${fmt(p.pm10)}</td></tr>`).join("");
+}
+
+function cityRows(list) {
+  return (list || []).map(c => `<tr><td>${esc(c.city)}</td><td class="num">${num(c.sensors)}</td>
+    <td class="num"><b style="color:${colorFor("pm25", c.pm25_median)}">${fmt(c.pm25_median)}</b></td></tr>`).join("");
+}
+
+function compareHtml(c) {
+  if (!c || !c.all) return `<p class="muted">Porównanie pojawi się, gdy zbierze się kilka godzin wspólnych pomiarów paczkomatów i stacji GIOŚ.</p>`;
+  const row = (label, x) => x ? `<tr><td>${label}</td><td class="num">${num(x.n)}</td><td class="num">${fmt(x.locker_mean)}</td>
+      <td class="num">${fmt(x.gios_mean)}</td><td class="num">${x.bias > 0 ? "+" : ""}${fmt(x.bias)}</td>
+      <td class="num">${x.ratio ?? "–"}</td><td class="num">${x.r ?? "–"}</td></tr>` : "";
+  return `<table class="stat-table"><tr><th>Czujniki</th><th class="num">Par</th><th class="num">Paczkomat</th><th class="num">GIOŚ</th>
+      <th class="num">Różnica</th><th class="num">Stosunek</th><th class="num">Korelacja</th></tr>
+    ${row("wszystkie", c.all)}${row("nowsze (z PM4)", c.new)}${row("starsze", c.old)}</table>
+    <p class="muted">PM2.5 w µg/m³: godzinowe pary stacja GIOŚ ↔ paczkomaty do ${c.radius_km} km (${num(c.stations)} stacji).
+      Różnica &gt; 0 — paczkomaty zawyżają; korelacja bliska 1 — dobrze śledzą zmiany, nawet jeśli mają stałe przesunięcie.</p>`;
 }
 
 async function openStats() {
@@ -500,6 +698,17 @@ async function openStats() {
       <div><h2>Najwyższe PM2.5 teraz</h2><table class="stat-table"><tr><th>Paczkomat</th><th>PM2.5</th><th>PM10</th></tr>${sensorRows(st.worst)}</table></div>
       <div><h2>Najczystsze powietrze teraz</h2><table class="stat-table"><tr><th>Paczkomat</th><th>PM2.5</th><th>PM10</th></tr>${sensorRows(st.best)}</table></div>
     </div>
+    <div class="cols">
+      <div><h2>Miasta — najwyższe PM2.5</h2><table class="stat-table"><tr><th>Miasto</th><th class="num">Czujn.</th><th class="num">PM2.5</th></tr>${cityRows(st.cities_worst)}</table></div>
+      <div><h2>Miasta — najczystsze</h2><table class="stat-table"><tr><th>Miasto</th><th class="num">Czujn.</th><th class="num">PM2.5</th></tr>${cityRows(st.cities_best)}</table></div>
+    </div>
+    <p class="muted">Mediana z działających czujników; w rankingu ${num(st.cities_ranked)} miejscowości z co najmniej 5 czujnikami.</p>
+    <h2>Profil dobowy PM2.5 w Polsce</h2>
+    ${st.profile && st.profile.pm25.some(v => v != null)
+      ? profileSvg(st.profile.pm25) + `<p class="muted">Średnia ze wszystkich odczytów o danej godzinie (dni zbierania: ${st.profile.days}). W sezonie grzewczym szczyt wypada zwykle wieczorem.</p>`
+      : `<p class="muted">Profil pojawi się po pierwszych dobach zbierania.</p>`}
+    <h2>Paczkomaty kontra stacje GIOŚ</h2>
+    ${compareHtml(st.compare)}
     <h2>Województwa (mediana PM2.5)</h2>
     <table class="stat-table"><tr><th>Województwo</th><th class="num">Czujników</th><th class="num">PM2.5</th></tr>
       ${st.provinces.map(p => `<tr><td>${esc(p.province)}</td><td class="num">${num(p.sensors)}</td><td class="num"><b style="color:${colorFor("pm25", p.pm25_median)}">${fmt(p.pm25_median)}</b></td></tr>`).join("")}</table>
@@ -539,6 +748,7 @@ async function load() {
   map.getSource("gios").setData(gios);
   fetch("/api/stats").then(r => r.json()).then(renderSummary).catch(() => {});
   computeDomains();
+  if (status.last_collect !== state.lastCollect) state.windLoaded = false;  // nowy przebieg — odśwież wiatr
   state.lastCollect = status.last_collect;
   state.hexRes = null;
   render();
@@ -549,10 +759,17 @@ async function load() {
 
 function setupUi() {
   $("#metrics").innerHTML = Object.entries(METRICS).map(([k, m]) => `<button data-metric="${k}">${m.label}</button>`).join("");
-  document.querySelectorAll("#metrics button").forEach(b => { b.onclick = () => { state.metric = b.dataset.metric; render(); }; });
+  document.querySelectorAll("#metrics button").forEach(b => {
+    b.onclick = () => { state.metric = b.dataset.metric; state.frameIdx === null ? render() : setFrame(state.frameIdx); };
+  });
   document.querySelectorAll("#views button").forEach(b => { b.onclick = () => { state.view = b.dataset.view; render(); }; });
   $("#show-suspect").onchange = e => { state.showSuspect = e.target.checked; render(); };
   $("#show-gios").onchange = e => { state.showGios = e.target.checked; render(); };
+  $("#show-wind").onchange = e => { state.showWind = e.target.checked; render(); };
+  $("#show-isobars").onchange = e => { state.showIsobars = e.target.checked; render(); };
+  $("#time-slider").oninput = e => { if (state.playing) togglePlay(); setFrame(Number(e.target.value)); };
+  $("#time-live").onclick = () => { if (state.playing) togglePlay(); setFrame(null); };
+  $("#time-play").onclick = togglePlay;
   $("#search").onsubmit = e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) search(q); };
   $("#panel-toggle").onclick = () => $("#panel").classList.toggle("collapsed");
   $("#stats-open").onclick = openStats;
@@ -565,5 +782,8 @@ setupUi();
 map.on("load", async () => {
   setupLayers();
   await load();
-  setInterval(load, 5 * 60 * 1000);
+  await loadFrames();
+  applyHash();
+  window.addEventListener("hashchange", applyHash);
+  setInterval(async () => { await load(); await loadFrames(); }, 5 * 60 * 1000);
 });

@@ -27,7 +27,7 @@ SETTINGS = [
          label="Ukrywaj podejrzane", help="Podejrzane czujniki domyślnie szare/ukryte na mapie (użytkownik może je pokazać)."),
     dict(key="pm_max", group="Jakość danych", type="float", default=500, min=100, max=5000,
          label="PM powyżej (µg/m³) = nierealny", help="Odczyt któregokolwiek pyłu powyżej progu oznacza zepsuty czujnik."),
-    dict(key="pm10_min", group="Jakość danych", type="float", default=0.5, min=0, max=5,
+    dict(key="pm10_min", group="Jakość danych", type="float", default=1.5, min=0, max=5,
          label="PM10 poniżej (µg/m³) = martwy", help="Na zewnątrz PM10 praktycznie nie spada do zera. 0 wyłącza regułę."),
     dict(key="humidity_max", group="Jakość danych", type="float", default=99.0, min=80, max=100,
          label="Wilgotność ≥ (%) = zalany", help="Taki odczyt oznacza mokry czujnik; PM też bywa wtedy zawyżone."),

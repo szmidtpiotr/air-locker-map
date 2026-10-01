@@ -53,7 +53,7 @@ document.querySelectorAll("#tabs button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
     document.querySelectorAll("main > section").forEach(s => { s.hidden = s.id !== `tab-${b.dataset.tab}`; });
-    ({ status: loadStatus, settings: loadSettings, sensors: loadSensors, keys: loadKeys, log: loadLog })[b.dataset.tab]();
+    ({ status: loadStatus, settings: loadSettings, sensors: loadSensors, health: loadHealth, keys: loadKeys, log: loadLog })[b.dataset.tab]();
   };
 });
 
@@ -216,6 +216,27 @@ async function loadSensors() {
       loadSensors();
     };
   });
+}
+
+// ------------------------------------------------------------------ zdrowie sieci
+
+async function loadHealth() {
+  const h = await api("/api/admin/health");
+  const tot = { sensors: 0, ok: 0, broken: 0, stuck: 0, dead: 0, absurd: 0, outlier: 0, stale: 0, wet: 0, no_data: 0, no_id: 0 };
+  const row = (name, r) => `<tr><td>${esc(name)}</td><td>${num(r.sensors)}</td><td>${num(r.ok)}</td><td><b>${num(r.broken)}</b></td>
+    <td>${r.sensors ? (100 * r.broken / r.sensors).toFixed(1) : "–"}</td><td>${num(r.stuck)}</td><td>${num(r.dead)}</td><td>${num(r.absurd)}</td>
+    <td>${num(r.outlier)}</td><td>${num(r.stale)}</td><td>${num(r.wet)}</td><td>${num(r.no_data)}</td><td>${num(r.no_id)}</td></tr>`;
+  let body = "";
+  for (const r of h.provinces) {
+    body += row(r.province || "?", r);
+    for (const k of Object.keys(tot)) tot[k] += r[k] || 0;
+  }
+  $("#health tbody").innerHTML = body + row("RAZEM", tot).replace("<tr>", '<tr style="font-weight:600">');
+  const a = h.abroad;
+  $("#abroad").innerHTML = a
+    ? `Ostatnie sprawdzenie: ${when(a.ts)} — ${Object.entries(a.found).map(([c, n]) => `${c}: <b>${n}</b>`).join(", ")}
+       ${Object.values(a.found).some(n => n) ? " — <b style=\"color:var(--ok)\">pojawiły się czujniki!</b>" : ""}`
+    : `Jeszcze nie sprawdzano — zadanie „Czujniki za granicą” uruchomi się samo albo z zakładki Status.`;
 }
 
 // ------------------------------------------------------------------ klucze API

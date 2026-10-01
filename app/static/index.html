@@ -40,9 +40,21 @@
       <p class="hint" id="view-hint"></p>
     </section>
 
+    <section id="time-box">
+      <h2>Czas <span id="time-label" class="time-label">na żywo</span></h2>
+      <div class="time-row">
+        <button id="time-play" class="icon-btn" title="Odtwórz ostatnie 24 h" aria-label="Odtwórz">▶</button>
+        <input type="range" id="time-slider" min="0" max="0" value="0" aria-label="Czas odczytu">
+        <button id="time-live" class="chip-btn" title="Wróć do bieżących odczytów">Teraz</button>
+      </div>
+      <p class="hint" id="time-hint"></p>
+    </section>
+
     <section class="toggles">
       <label><input type="checkbox" id="show-suspect"> Pokaż podejrzane czujniki</label>
       <label><input type="checkbox" id="show-gios"> Stacje GIOŚ (oficjalne)</label>
+      <label><input type="checkbox" id="show-wind"> Wiatr (Open-Meteo)</label>
+      <label><input type="checkbox" id="show-isobars"> Izobary (co 2 hPa)</label>
     </section>
 
     <section>

@@ -149,45 +149,85 @@ def api_sensors():
     return JSONResponse(data, headers={"Cache-Control": "max-age=60"})
 
 
-@app.get("/api/hex")
-def api_hex(res: int = 6, metric: str = "pm25", suspect: bool = False):
-    if metric not in collector.METRICS or not 3 <= res <= 8:
-        raise HTTPException(400, "zły parametr")
-    return JSONResponse(collector.hex_layer(res, metric, suspect), headers={"Cache-Control": "max-age=60"})
-
-
 _surface_lock = threading.Lock()
 _STOP = re.compile(r"^-?\d+(\.\d+)?:#[0-9a-fA-F]{6}$")
 
 
+def _check_ts(ts):
+    if ts is not None and not any(f["ts"] == ts for f in collector.frames(26)):
+        raise HTTPException(404, "nie ma takiej klatki")
+
+
+@app.get("/api/hex")
+def api_hex(res: int = 6, metric: str = "pm25", suspect: bool = False, ts: int | None = None):
+    if metric not in collector.METRICS or not 3 <= res <= 8:
+        raise HTTPException(400, "zły parametr")
+    _check_ts(ts)
+    return JSONResponse(collector.hex_layer(res, metric, suspect, ts), headers={"Cache-Control": "max-age=300"})
+
+
+@app.get("/api/frames")
+def api_frames():
+    """Klatki suwaka czasu: pełne przebiegi z ostatnich 24 h."""
+    return JSONResponse(collector.frames(24), headers={"Cache-Control": "max-age=120"})
+
+
+@app.get("/api/frame")
+def api_frame(ts: int, metric: str = "pm25"):
+    if metric not in collector.HISTORY_METRICS:
+        raise HTTPException(400, "ta wielkość nie ma historii")
+    _check_ts(ts)
+    return JSONResponse({"ts": ts, "values": collector.frame_values(ts, metric)},
+                        headers={"Cache-Control": "max-age=3600"})
+
+
 @app.get("/api/surface.png")
-def api_surface(metric: str = "pm25", stops: str = "", suspect: bool = False):
+def api_surface(metric: str = "pm25", stops: str = "", suspect: bool = False, ts: int | None = None):
     """Plama (interpolacja) dla wielkości; przystanki kolorów z legendy przeglądarki: „12:#2e9e44,30:#9ccc3a…”."""
     if metric not in collector.METRICS:
         raise HTTPException(400, "zła wielkość")
     parts = stops.split(",")
     if not 2 <= len(parts) <= 10 or not all(_STOP.match(p) for p in parts):
         raise HTTPException(400, "złe przystanki kolorów")
+    _check_ts(ts)
     stop_list = sorted((float(v), c) for v, c in (p.split(":") for p in parts))
-    key = (metric, suspect, stops, collector.cache["built"])
+    key = (metric, suspect, stops, ts, collector.cache["built"])
     cached = collector.cache.setdefault("surface", {})
     if key not in cached:
         with _surface_lock:  # jedno liczenie naraz — to najdroższy endpoint
             if key not in cached:
-                pts = [(f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0], f["properties"][metric])
-                       for f in (collector.cache["sensors"] or {}).get("features", [])
-                       if f["properties"].get(metric) is not None and (suspect or not f["properties"]["suspect"])]
+                pts = collector.metric_points(metric, ts, suspect)
                 if len(pts) < 3:
                     raise HTTPException(404, "za mało danych")
-                if len(cached) > 40:
+                if len(cached) > 60:
                     cached.clear()
                 cached[key] = surface.render(pts, stop_list)
-    return Response(cached[key], media_type="image/png", headers={"Cache-Control": "max-age=300"})
+    # klatki z przeszłości się nie zmieniają — przeglądarka może je trzymać długo
+    age = 86400 if ts else 300
+    return Response(cached[key], media_type="image/png", headers={"Cache-Control": f"max-age={age}"})
 
 
-@app.get("/api/surface/corners")
-def api_surface_corners():
-    return surface.corners()
+@app.get("/api/isobars")
+def api_isobars(ts: int | None = None, step: float = 2.0):
+    """Izobary (ciśnienie n.p.m.) co `step` hPa."""
+    if not 0.5 <= step <= 5:
+        raise HTTPException(400, "krok 0,5–5 hPa")
+    _check_ts(ts)
+    key = ("iso", ts, step, collector.cache["built"])
+    cached = collector.cache.setdefault("surface", {})
+    if key not in cached:
+        with _surface_lock:
+            if key not in cached:
+                pts = collector.metric_points("pressure_sl", ts)
+                cached[key] = (surface.isolines(pts, step) if len(pts) >= 3
+                               else {"type": "FeatureCollection", "features": []})
+    return JSONResponse(cached[key], headers={"Cache-Control": "max-age=86400" if ts else "max-age=300"})
+
+
+@app.get("/api/wind")
+def api_wind():
+    return JSONResponse(collector.cache.get("wind") or {"type": "FeatureCollection", "features": []},
+                        headers={"Cache-Control": "max-age=300"})
 
 
 @app.get("/api/gios")
@@ -246,6 +286,22 @@ def api_search(q: str, request: Request):
 
 
 _geo = {"last": 0.0}
+
+
+@app.get("/api/profile/{name}")
+def api_profile(name: str):
+    """Profil dobowy czujnika (średnie PM2.5 dla godzin doby, dni robocze / weekend)."""
+    name = name.upper()
+    if not db.q1("SELECT 1 FROM lockers WHERE name = ?", (name,)):
+        raise HTTPException(404, "nie ma takiego paczkomatu")
+    return JSONResponse(collector.sensor_profile(name), headers={"Cache-Control": "max-age=900"})
+
+
+@app.get("/api/compare")
+def api_compare():
+    """Paczkomaty kontra stacje GIOŚ (liczone po każdym pobraniu stacji)."""
+    return JSONResponse(collector.cache.get("compare") or {"summary": None, "stations": []},
+                        headers={"Cache-Control": "max-age=600"})
 
 
 @app.get("/api/stats")
@@ -348,6 +404,12 @@ def admin_sensors(kind: str = "flagged"):
         l.flags, l.pm25, l.humidity, l.changed_at, l.ts FROM lockers k LEFT JOIN latest l USING(name)
         WHERE {where} ORDER BY k.name LIMIT 1000""")
     return [dict(r) for r in rows]
+
+
+@app.get("/api/admin/health", dependencies=[Depends(admin)])
+def admin_health():
+    abroad = db.q1("SELECT value FROM settings WHERE key='abroad_last'")
+    return {"provinces": collector.network_health(), "abroad": json.loads(abroad["value"]) if abroad else None}
 
 
 @app.get("/api/admin/keys", dependencies=[Depends(admin)])

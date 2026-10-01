@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS api_keys (
     rate_per_min INTEGER, created INTEGER, revoked INTEGER, last_used INTEGER, uses INTEGER DEFAULT 0
 );
 
+-- godzinowe odczyty stacji GIOŚ (do porównań z paczkomatami)
+CREATE TABLE IF NOT EXISTS gios_readings (
+    station_id INTEGER, ts TEXT, pm25 REAL, pm10 REAL,   -- ts: czas pomiaru GIOŚ, np. "2026-10-01 19:00:00"
+    PRIMARY KEY (station_id, ts)
+);
+
+-- wiatr z Open-Meteo na siatce nad Polską (ostatnie pobranie)
+CREATE TABLE IF NOT EXISTS wind (
+    lat REAL, lon REAL, speed REAL, gust REAL, direction REAL, ts TEXT,
+    PRIMARY KEY (lat, lon)
+);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -90,9 +102,20 @@ def conn():
     return c
 
 
+# kolumny dodane po pierwszym wdrożeniu — CREATE TABLE IF NOT EXISTS ich nie dopisze
+MIGRATIONS = [
+    ("latest", "pressure_trend", "REAL"),   # zmiana ciśnienia n.p.m. w ciągu ~3 h [hPa]
+]
+
+
 def init():
-    conn().executescript(SCHEMA)
-    conn().commit()
+    c = conn()
+    c.executescript(SCHEMA)
+    for table, column, ctype in MIGRATIONS:
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ctype}")
+    c.commit()
 
 
 def write(sql, params=()):

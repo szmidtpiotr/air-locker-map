@@ -25,6 +25,7 @@
       <button data-tab="status" class="active">Status</button>
       <button data-tab="settings">Parametry</button>
       <button data-tab="sensors">Czujniki</button>
+      <button data-tab="health">Zdrowie sieci</button>
       <button data-tab="keys">Klucze API</button>
       <button data-tab="log">Dziennik</button>
     </nav>
@@ -62,6 +63,22 @@
         </div>
         <p class="hint" id="sensor-hint"></p>
         <table id="sensors"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-health" hidden>
+      <div class="card">
+        <h2>Zdrowie sieci czujników</h2>
+        <p class="hint">Per województwo: ile czujników działa, ile jest zepsutych (zawieszone, martwe, nierealne, odstające, długo bez zmian)
+          i ilu nie da się odczytać. „Zalane” (wilgotność ~100%) liczone osobno — zwykle to mgła, nie awaria.</p>
+        <table id="health"><thead><tr><th>Województwo</th><th>Czujników</th><th>Działa</th><th>Zepsute</th><th>%</th>
+          <th>Zawiesz.</th><th>Martwe</th><th>Nierealne</th><th>Odstające</th><th>Bez zmian</th><th>Mgła/zalane</th><th>Bez danych</th><th>Bez ID</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Za granicą</h2>
+        <p class="hint">Raz w miesiącu próbka paczkomatów z FR, IT, ES, PT, GB, BE, NL, LU — czy pojawiły się czujniki
+          (na październik 2026 nie było żadnego, szczegóły w <code>docs/zagranica.md</code>).</p>
+        <div id="abroad"></div>
       </div>
     </section>
 

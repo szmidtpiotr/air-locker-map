@@ -48,10 +48,10 @@ def colorize(values, stops):
     return out
 
 
-def render(points, stops, max_km=25.0, opacity=0.78):
-    """points: lista (lat, lon, value). Zwraca PNG (bytes)."""
-    w, s, e, n = BBOX
-    y_n, y_s = _merc_y(n), _merc_y(s)
+def interpolate(points, max_km=25.0):
+    """Siatka wartości (IDW po wygładzeniu medianą). Zwraca (lons, lats, grid), NaN tam, gdzie brak czujników."""
+    w, s_, e, n = BBOX
+    y_n, y_s = _merc_y(n), _merc_y(s_)
     grid_h = int(GRID_W * (y_n - y_s) / math.radians(e - w))
     lons = np.linspace(w, e, GRID_W)
     lats = np.array([_inv_merc_y(y) for y in np.linspace(y_n, y_s, grid_h)])
@@ -74,8 +74,13 @@ def render(points, stops, max_km=25.0, opacity=0.78):
     wgt = 1.0 / np.maximum(dk, 0.3) ** POWER
     result = (wgt * values[idx]).sum(axis=1) / wgt.sum(axis=1)
     result[dk[:, 0] > max_km] = np.nan
+    return lons, lats, result.reshape(grid_h, GRID_W)
 
-    grid = result.reshape(grid_h, GRID_W)
+
+def render(points, stops, max_km=25.0, opacity=0.78):
+    """points: lista (lat, lon, value). Zwraca PNG (bytes)."""
+    lons, lats, grid = interpolate(points, max_km)
+    grid_h = len(lats)
     alpha = np.where(np.isnan(grid), 0, int(255 * opacity)).astype(np.uint8)
     rgb = colorize(np.nan_to_num(grid, nan=stops[0][0]), stops).astype(np.uint8)
     img = Image.fromarray(np.dstack([rgb, alpha]), "RGBA")
@@ -86,3 +91,34 @@ def render(points, stops, max_km=25.0, opacity=0.78):
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
     return buf.getvalue()
+
+
+def isolines(points, step, max_km=25.0):
+    """Izolinie (np. izobary co `step` hPa) jako GeoJSON z właściwością `value`."""
+    import contourpy
+
+    from scipy.ndimage import gaussian_filter
+
+    lons, lats, grid = interpolate(points, max_km)
+    # izobary mają być gładkie jak na mapie pogody: rozmycie ~7 km z poprawką na brzegi (NaN poza zasięgiem)
+    mask = ~np.isnan(grid)
+    num = gaussian_filter(np.where(mask, grid, 0.0), sigma=4)
+    den = gaussian_filter(mask.astype(float), sigma=4)
+    smooth = np.where(mask, num / np.maximum(den, 1e-6), np.nan)
+    gen = contourpy.contour_generator(x=lons, y=lats, z=np.ma.masked_invalid(smooth),
+                                      line_type=contourpy.LineType.Separate)
+    lo, hi = np.nanmin(smooth), np.nanmax(smooth)
+    feats = []
+    level = math.ceil(lo / step) * step
+    while level <= hi:
+        lines = []
+        for ln in gen.lines(level):
+            closed = len(ln) > 2 and np.allclose(ln[0], ln[-1])
+            if len(ln) < 12 or (closed and len(ln) < 60):   # strzępy i małe „wysepki” wokół pojedynczych czujników
+                continue
+            lines.append(ln.round(4).tolist())
+        if lines:
+            feats.append({"type": "Feature", "properties": {"value": round(level, 1)},
+                          "geometry": {"type": "MultiLineString", "coordinates": lines}})
+        level += step
+    return {"type": "FeatureCollection", "features": feats}
