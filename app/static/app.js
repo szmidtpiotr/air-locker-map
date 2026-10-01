@@ -21,6 +21,10 @@ const METRICS = {
                  note: "Uwaga: mierzona w obudowie paczkomatu — w słońcu mocno zawyżona. To nie jest temperatura powietrza." },
 };
 
+// narożniki obrazu plamy — muszą się zgadzać z BBOX w app/surface.py
+const SURFACE_CORNERS = [[13.9, 55.05], [24.4, 55.05], [24.4, 48.85], [13.9, 48.85]];
+const TRANSPARENT_PNG = "/static/empty.png";  // pusty obraz startowy; data: blokuje CSP (connect-src)
+
 const state = {
   cfg: null, data: null, metric: "pm25", view: "points",
   showSuspect: false, showGios: true, domains: {}, hexRes: null, searchMarker: null, origin: null,
@@ -159,7 +163,6 @@ function setupLayers() {
     type: "geojson", data: { type: "FeatureCollection", features: [] },
     cluster: true, clusterRadius: 38, clusterMaxZoom: 9, clusterProperties: clusterProperties(),
   });
-  map.addSource("sensors-flat", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addSource("hex", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addSource("gios", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
 
@@ -168,14 +171,9 @@ function setupLayers() {
   map.addLayer({ id: "hex-fill", type: "fill", source: "hex", paint: { "fill-opacity": 0.6, "fill-color": "#ccc" } }, firstLabel);
   map.addLayer({ id: "hex-line", type: "line", source: "hex", paint: { "line-color": "#fff", "line-width": 0.6 } }, firstLabel);
 
-  map.addLayer({
-    id: "heat", type: "heatmap", source: "sensors-flat", maxzoom: 13,
-    paint: {
-      "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 14, 9, 30, 13, 60],
-      "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 0.6, 12, 1.4],
-      "heatmap-opacity": 0.75,
-    },
-  }, firstLabel);
+  // plama: interpolacja liczona na serwerze (obraz PNG), pod nazwami miejscowości
+  map.addSource("surface", { type: "image", url: TRANSPARENT_PNG, coordinates: SURFACE_CORNERS });
+  map.addLayer({ id: "heat", type: "raster", source: "surface", paint: { "raster-opacity": 0.85, "raster-fade-duration": 0 } }, firstLabel);
 
   map.addLayer({
     id: "clusters", type: "circle", source: "sensors", filter: ["has", "point_count"],
@@ -231,7 +229,6 @@ function render() {
   const feats = visibleFeatures();
   const fc = { type: "FeatureCollection", features: feats };
   map.getSource("sensors").setData(fc);
-  map.getSource("sensors-flat").setData({ type: "FeatureCollection", features: feats.filter(f => !f.properties.suspect) });
 
   const val = ["get", metric];
   map.setPaintProperty("points", "circle-color",
@@ -242,22 +239,6 @@ function render() {
     : ["/", ["get", `${metric}_sum`], ["max", ["get", `${metric}_n`], 1]];
   map.setPaintProperty("clusters", "circle-color",
     ["case", ["==", ["get", `${metric}_n`], 0], SUSPECT_COLOR, colorExpr(metric, clusterVal)]);
-
-  // plama: tylko dla pyłów (dla ciśnienia czy wilgotności gęstość nie ma sensu)
-  const heatOk = m.kind === "index";
-  if (heatOk) {
-    const t = thresholds(metric);
-    map.setPaintProperty("heat", "heatmap-weight", ["interpolate", ["linear"], ["coalesce", val, 0], 0, 0, t[3], 1]);
-    const ramp = ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)"];
-    INDEX_COLORS.forEach((c, i) => ramp.push(0.15 + i * 0.17, c));
-    map.setPaintProperty("heat", "heatmap-color", ramp);
-  }
-  // plama ma sens tylko dla pyłów — przy innej wielkości przełączamy na PM2.5 i mówimy dlaczego
-  if (!heatOk && state.view === "heat") {
-    state.metric = "pm25";
-    state.heatNote = `Plama działa tylko dla pyłów — przełączono z „${m.label}” na PM2.5.`;
-    return render();
-  }
 
   const v = state.view;
   const vis = (id, on) => map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
@@ -275,18 +256,20 @@ function render() {
 
   const giosOn = state.showGios && (metric === "pm25" || metric === "pm10");
   vis("gios", giosOn);
+  // stacje, które danej wielkości w ogóle nie mierzą, nie mają być szarymi kropkami „bez danych”
+  map.setFilter("gios", ["!=", ["get", metric], null]);
   map.setPaintProperty("gios", "circle-color",
     ["case", ["==", ["get", metric], null], SUSPECT_COLOR, colorExpr(metric, ["get", metric])]);
 
   if (v === "hex") refreshHex(true);
+  if (v === "heat") refreshSurface();
   document.querySelectorAll("#views button").forEach(b => b.classList.toggle("active", b.dataset.view === state.view));
   document.querySelectorAll("#metrics button").forEach(b => b.classList.toggle("active", b.dataset.metric === metric));
   $("#view-hint").textContent = {
     points: "Przy oddaleniu czujniki łączą się w grupy — kolor grupy to najgorszy czujnik (pyły) albo średnia.",
     hex: "Mediana z czujników w każdym sześciokącie. Odporna na pojedyncze zepsute czujniki.",
-    heat: "Plama rośnie tam, gdzie jest dużo czujników z wysokim odczytem.",
-  }[state.view] + (state.view === "heat" && state.heatNote ? " " + state.heatNote : "");
-  state.heatNote = null;
+    heat: "Wartości rozlane między czujnikami (średnia ważona odległością). Dalej niż ~25 km od czujnika plama znika — tam nie ma pomiarów.",
+  }[state.view];
   renderLegend();
   if (state.origin) renderNearest();
 }
@@ -300,6 +283,26 @@ async function refreshHex(force = false) {
   const r = await fetch(`/api/hex?res=${res}&metric=${state.metric}&suspect=${state.showSuspect}`);
   map.getSource("hex").setData(await r.json());
   map.setPaintProperty("hex-fill", "fill-color", colorExpr(state.metric, ["get", "value"]));
+}
+
+// przystanki kolorów plamy — te same barwy co w legendzie
+function surfaceStops(metric) {
+  const m = METRICS[metric];
+  if (m.kind === "index") {
+    const t = thresholds(metric);
+    const mids = INDEX_COLORS.map((c, i) => [i === 0 ? t[0] / 2 : i === t.length ? t[t.length - 1] * 1.2 : (t[i - 1] + t[i]) / 2, c]);
+    return mids;
+  }
+  const [lo, hi] = state.domains[metric];
+  return m.ramp.map((c, i) => [lo + (hi - lo) * i / (m.ramp.length - 1), c]);
+}
+
+function refreshSurface() {
+  const stops = surfaceStops(state.metric).map(([v, c]) => `${Math.round(v * 100) / 100}:${c}`).join(",");
+  const url = `/api/surface.png?metric=${state.metric}&suspect=${state.showSuspect}&stops=${encodeURIComponent(stops)}&t=${state.lastCollect || ""}`;
+  if (url === state.surfaceUrl) return;
+  state.surfaceUrl = url;
+  map.getSource("surface").updateImage({ url, coordinates: SURFACE_CORNERS });
 }
 
 function renderLegend() {
@@ -534,6 +537,7 @@ async function load() {
   map.getSource("gios").setData(gios);
   fetch("/api/stats").then(r => r.json()).then(renderSummary).catch(() => {});
   computeDomains();
+  state.lastCollect = status.last_collect;
   state.hexRes = null;
   render();
   $("#status").textContent = status.last_collect

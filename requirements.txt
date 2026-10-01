@@ -1,3 +1,6 @@
 fastapi>=0.115
 uvicorn>=0.32
 h3>=4.1
+numpy>=2.0
+scipy>=1.13
+pillow>=10

@@ -440,6 +440,7 @@ def build_cache():
                       "properties": props})
     cache["sensors"] = {"type": "FeatureCollection", "features": feats}
     cache["hex"] = {}
+    cache["surface"] = {}
     g = db.q("SELECT * FROM gios WHERE pm25 IS NOT NULL OR pm10 IS NOT NULL")
     cache["gios"] = {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},

@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -13,7 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api_v1, apikeys, collector, config, db, sources
+from . import api_v1, apikeys, collector, config, db, sources, surface
 from .quality import FLAG_LABELS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -153,6 +154,40 @@ def api_hex(res: int = 6, metric: str = "pm25", suspect: bool = False):
     if metric not in collector.METRICS or not 3 <= res <= 8:
         raise HTTPException(400, "zły parametr")
     return JSONResponse(collector.hex_layer(res, metric, suspect), headers={"Cache-Control": "max-age=60"})
+
+
+_surface_lock = threading.Lock()
+_STOP = re.compile(r"^-?\d+(\.\d+)?:#[0-9a-fA-F]{6}$")
+
+
+@app.get("/api/surface.png")
+def api_surface(metric: str = "pm25", stops: str = "", suspect: bool = False):
+    """Plama (interpolacja) dla wielkości; przystanki kolorów z legendy przeglądarki: „12:#2e9e44,30:#9ccc3a…”."""
+    if metric not in collector.METRICS:
+        raise HTTPException(400, "zła wielkość")
+    parts = stops.split(",")
+    if not 2 <= len(parts) <= 10 or not all(_STOP.match(p) for p in parts):
+        raise HTTPException(400, "złe przystanki kolorów")
+    stop_list = sorted((float(v), c) for v, c in (p.split(":") for p in parts))
+    key = (metric, suspect, stops, collector.cache["built"])
+    cached = collector.cache.setdefault("surface", {})
+    if key not in cached:
+        with _surface_lock:  # jedno liczenie naraz — to najdroższy endpoint
+            if key not in cached:
+                pts = [(f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0], f["properties"][metric])
+                       for f in (collector.cache["sensors"] or {}).get("features", [])
+                       if f["properties"].get(metric) is not None and (suspect or not f["properties"]["suspect"])]
+                if len(pts) < 3:
+                    raise HTTPException(404, "za mało danych")
+                if len(cached) > 40:
+                    cached.clear()
+                cached[key] = surface.render(pts, stop_list)
+    return Response(cached[key], media_type="image/png", headers={"Cache-Control": "max-age=300"})
+
+
+@app.get("/api/surface/corners")
+def api_surface_corners():
+    return surface.corners()
 
 
 @app.get("/api/gios")
