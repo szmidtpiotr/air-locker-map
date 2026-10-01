@@ -1,0 +1,22 @@
+[Unit]
+Description=air-locker-map — mapa czujnikow powietrza z paczkomatow InPost
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=airmap
+Group=airmap
+WorkingDirectory=/opt/air-locker-map
+EnvironmentFile=/etc/air-locker-map.env
+Environment=AIRMAP_DB=/var/lib/air-locker-map/airmap.sqlite
+ExecStart=/opt/air-locker-map/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1 --proxy-headers --forwarded-allow-ips=192.168.1.4 --no-server-header
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/air-locker-map
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

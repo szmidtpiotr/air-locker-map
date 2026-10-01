@@ -54,6 +54,17 @@ zamień w adresie `develop` na hash commita (np. `.../air-locker-map/59841e7/pac
 Pierwsze uruchomienie pobiera listę stron paczkomatów z inpost.pl (ok. 20 s) i trzyma ją
 tydzień w `~/.cache/paczkomat-powietrze/`. Kolejne trwają kilka sekund.
 
+## Strona z mapą
+
+Na żywo: **https://powietrze.studio-colorbox.com/** — wszystkie czujniki w Polsce na mapie
+(kropki z grupowaniem, sześciokąty H3, plama), wyszukiwarka adresu i kodu paczkomatu, wykres 24 h,
+oznaczanie podejrzanych czujników (zawieszone, zalane, nierealne, odstające od sąsiadów),
+oficjalne stacje GIOŚ jako odniesienie. Panel `/admin` steruje kolektorem i parametrami.
+
+Kod w `app/` (FastAPI + SQLite, kolektor w tym samym procesie), wdrożenie `deploy/deploy.sh`
+na kontener Debiana (`/opt/air-locker-map`, usługa `air-locker-map.service`, port 8080).
+Pierwsze wdrożenie generuje hasło panelu i wypisuje je raz na ekran.
+
 ## Skąd są dane
 
 1. **ShipX API** (`api-shipx-pl.easypack24.net/v1/points`, publiczne, bez klucza) — współrzędne

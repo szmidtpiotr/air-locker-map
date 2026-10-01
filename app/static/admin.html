@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Administracja — powietrze z paczkomatów</title>
+<link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+
+<div id="login" class="card narrow" hidden>
+  <h1>Administracja</h1>
+  <form id="login-form">
+    <label>Hasło <input type="password" id="pw" autocomplete="current-password" autofocus></label>
+    <button class="btn">Zaloguj</button>
+    <p id="login-err" class="err"></p>
+  </form>
+  <p><a href="/">← mapa</a></p>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <h1>Administracja</h1>
+    <nav id="tabs">
+      <button data-tab="status" class="active">Status</button>
+      <button data-tab="settings">Parametry</button>
+      <button data-tab="sensors">Czujniki</button>
+      <button data-tab="log">Dziennik</button>
+    </nav>
+    <span class="spacer"></span>
+    <a href="/">Mapa</a>
+    <button id="logout" class="link">Wyloguj</button>
+  </header>
+
+  <main>
+    <section id="tab-status">
+      <div id="job" class="card"></div>
+      <div class="grid" id="counts"></div>
+      <div class="card">
+        <h2>Zadania</h2>
+        <p class="hint">Jedno zadanie naraz. Harmonogram sam uruchamia odczyty, listę paczkomatów i GIOŚ według parametrów.</p>
+        <div id="job-buttons" class="buttons"></div>
+        <div id="next" class="hint"></div>
+      </div>
+      <div class="card">
+        <h2>Ostatnie przebiegi</h2>
+        <table id="runs"><thead><tr><th>Zadanie</th><th>Start</th><th>Czas</th><th>OK</th><th>Bez danych / błędy</th><th>Uwagi</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-settings" hidden>
+      <form id="settings-form"></form>
+    </section>
+
+    <section id="tab-sensors" hidden>
+      <div class="card">
+        <div class="buttons" id="sensor-kinds">
+          <button data-kind="flagged" class="active">Podejrzane i ukryte</button>
+          <button data-kind="no_data">Bez danych przy ostatnim odczycie</button>
+          <button data-kind="no_id">Bez ID punktu</button>
+        </div>
+        <p class="hint" id="sensor-hint"></p>
+        <table id="sensors"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-log" hidden>
+      <div class="card"><pre id="log"></pre></div>
+    </section>
+  </main>
+</div>
+
+<div id="toast"></div>
+<script src="/static/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Powietrze z paczkomatów</title>
+<link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="panel">
+  <header>
+    <h1 id="title">Powietrze z paczkomatów</h1>
+    <button id="panel-toggle" class="icon" title="Zwiń panel" aria-label="Zwiń panel">‹</button>
+  </header>
+
+  <div class="panel-body">
+    <form id="search" autocomplete="off">
+      <input id="q" type="search" placeholder="Adres albo kod paczkomatu (np. WAW84A)" aria-label="Szukaj">
+      <button type="submit">Szukaj</button>
+    </form>
+    <div id="search-results"></div>
+
+    <section>
+      <h2>Wielkość</h2>
+      <div class="chips" id="metrics"></div>
+    </section>
+
+    <section>
+      <h2>Widok</h2>
+      <div class="chips" id="views">
+        <button data-view="points">Kropki</button>
+        <button data-view="hex">Sześciokąty</button>
+        <button data-view="heat">Plama</button>
+      </div>
+      <p class="hint" id="view-hint"></p>
+    </section>
+
+    <section class="toggles">
+      <label><input type="checkbox" id="show-suspect"> Pokaż podejrzane czujniki</label>
+      <label><input type="checkbox" id="show-gios"> Stacje GIOŚ (oficjalne)</label>
+    </section>
+
+    <section>
+      <h2>Legenda</h2>
+      <div id="legend"></div>
+    </section>
+
+    <section id="nearest-box" hidden>
+      <h2>Najbliższe czujniki</h2>
+      <ol id="nearest"></ol>
+    </section>
+  </div>
+
+  <footer>
+    <span id="status">Ładowanie…</span>
+    <a href="/admin" class="admin-link">Administracja</a>
+  </footer>
+</aside>
+
+<script src="/static/vendor/maplibre-gl.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
