@@ -37,6 +37,9 @@ def compute_flags(rows, s, now=None):
             flags[r["name"]].append("stuck")
         if any(v is not None and v > s["pm_max"] for v in pms):
             flags[r["name"]].append("absurd")
+        # na zewnątrz PM10 praktycznie nigdy nie spada do zera — taki odczyt to martwy czujnik
+        if r["pm10"] is not None and r["pm10"] < s["pm10_min"]:
+            flags[r["name"]].append("dead")
         if r["humidity"] is not None and r["humidity"] >= s["humidity_max"]:
             flags[r["name"]].append("wet")
         if r["changed_at"] and now - r["changed_at"] > s["stale_hours"] * 3600:
@@ -68,6 +71,7 @@ def compute_flags(rows, s, now=None):
 FLAG_LABELS = {
     "stuck": "zawieszony czujnik (PM1 = PM2.5 = PM10)",
     "absurd": "nierealnie wysoki odczyt pyłu",
+    "dead": "czujnik pyłu pokazuje zero (prawdopodobnie martwy)",
     "wet": "zalany czujnik (wilgotność ~100%)",
     "stale": "odczyt nie zmienia się od wielu godzin",
     "outlier": "mocno odstaje od sąsiednich czujników",

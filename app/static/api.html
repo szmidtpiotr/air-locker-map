@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API — powietrze z paczkomatów</title>
+<link rel="stylesheet" href="/static/admin.css">
+<style>
+  main { max-width: 900px; }
+  code, pre { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 13px; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+  td code { background: #f2f4f7; padding: 1px 5px; border-radius: 4px; }
+  h2 { margin-top: 8px; }
+</style>
+</head>
+<body>
+<header class="top"><h1>API</h1><span class="spacer"></span><a href="/">← Mapa</a></header>
+<main>
+  <div class="card">
+    <p>Publiczne API tylko do odczytu, JSON, bez klucza. Limit: <b>120 zapytań na minutę</b> z jednego adresu IP.
+      Dane odświeżane są co ok. godzinę, więc pytanie częściej niż co 10–15 minut nic nie daje.</p>
+    <p class="hint">Źródło: nieoficjalne odczyty czujników z paczkomatów InPost, stacje GIOŚ jako odniesienie.
+      Projekt hobbystyczny, bez gwarancji dostępności. Kod: <a href="https://github.com/szmidtpiotr/air-locker-map">github.com/szmidtpiotr/air-locker-map</a>.</p>
+  </div>
+
+  <div class="card">
+    <h2>Endpointy</h2>
+    <table>
+      <tr><th>Adres</th><th>Co zwraca</th></tr>
+      <tr><td><code>GET /api/v1/stats</code></td><td>Statystyki całego kraju: liczba czujników, mediany, rozkład klas, województwa, trend.</td></tr>
+      <tr><td><code>GET /api/v1/sensors</code></td><td>Wszystkie działające czujniki. Opcje: <code>province=mazowieckie</code>, <code>include_suspect=true</code>.</td></tr>
+      <tr><td><code>GET /api/v1/sensors/{kod}</code></td><td>Jeden czujnik, np. <code>/api/v1/sensors/KAP02M</code>.</td></tr>
+      <tr><td><code>GET /api/v1/sensors/{kod}/history?hours=24</code></td><td>Surowe odczyty (do 90 dni wstecz).</td></tr>
+      <tr><td><code>GET /api/v1/sensors/{kod}/daily?days=30</code></td><td>Dzienne średnie i maksima (trzymane bezterminowo).</td></tr>
+      <tr><td><code>GET /api/v1/nearest?lat=52.27&amp;lon=20.46&amp;n=5</code></td><td>Najbliższe działające czujniki do punktu, z odległością.</td></tr>
+      <tr><td><code>GET /api/v1/lockers/{kod}/nearest?n=5</code></td><td>Najbliższe czujniki do <b>dowolnego</b> paczkomatu (także bez czujnika), np. <code>KAP01M</code>.</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Przykład odpowiedzi czujnika</h2>
+<pre>{
+  "name": "KAP02M", "address": "Niepokalanowska 2B, 05-085 Kampinos",
+  "lat": 52.27, "lon": 20.46, "elevation": 86, "distance_m": 564,
+  "updated": 1790871312, "status": "ok", "level": "VERY_GOOD",
+  "measurements": { "pm1": 3.7, "pm25": 5.4, "pm4": null, "pm10": 6.2,
+                    "pressure": 1029.1, "pressure_sl": 1029.1, "humidity": 59, "temperature": 20.3 },
+  "suspect": false, "flags": []
+}</pre>
+    <ul class="hint">
+      <li><code>pressure_sl</code> — ciśnienie zredukowane do poziomu morza (porównywalne między miastami); <code>pressure</code> — surowe z czujnika.</li>
+      <li><code>temperature</code> i <code>humidity</code> mierzone są w obudowie paczkomatu — w słońcu temperatura bywa mocno zawyżona.</li>
+      <li><code>suspect: true</code> + <code>flags</code> — czujnik wygląda na zepsuty (zawieszony, zalany, nierealny odczyt, odstaje od sąsiadów). Domyślnie takie czujniki są pomijane.</li>
+      <li><code>updated</code>, <code>changed</code> — czas uniksowy ostatniego odczytu i ostatniej zmiany wartości.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Home Assistant — najbliższy czujnik do domu</h2>
+    <p class="hint">Do <code>configuration.yaml</code> (albo do pakietu). Bierze współrzędne strefy <code>zone.home</code>
+      i co 15 minut pobiera najbliższy działający czujnik. Jeśli najbliższy się zepsuje, API samo poda następny.
+      W sieci domowej możesz zamiast domeny wpisać adres lokalny serwera.</p>
+<pre>rest:
+  - resource_template: >-
+      https://air-locker-map.studio-colorbox.com/api/v1/nearest?n=1&amp;lat={{ state_attr('zone.home', 'latitude') }}&amp;lon={{ state_attr('zone.home', 'longitude') }}
+    scan_interval: 900
+    sensor:
+      - name: "Paczkomat PM2.5"
+        unique_id: paczkomat_pm25
+        value_template: "{{ value_json.sensors[0].measurements.pm25 }}"
+        unit_of_measurement: "µg/m³"
+        device_class: pm25
+        state_class: measurement
+        json_attributes_path: "$.sensors[0]"
+        json_attributes: [name, address, distance_m, updated, flags]
+      - name: "Paczkomat PM10"
+        unique_id: paczkomat_pm10
+        value_template: "{{ value_json.sensors[0].measurements.pm10 }}"
+        unit_of_measurement: "µg/m³"
+        device_class: pm10
+        state_class: measurement
+      - name: "Paczkomat PM1"
+        unique_id: paczkomat_pm1
+        value_template: "{{ value_json.sensors[0].measurements.pm1 }}"
+        unit_of_measurement: "µg/m³"
+        device_class: pm1
+        state_class: measurement
+      - name: "Paczkomat ciśnienie"
+        unique_id: paczkomat_cisnienie
+        value_template: "{{ value_json.sensors[0].measurements.pressure_sl }}"
+        unit_of_measurement: "hPa"
+        device_class: atmospheric_pressure
+        state_class: measurement</pre>
+    <p class="hint">Konkretny paczkomat zamiast „najbliższego”: <code>resource: https://…/api/v1/sensors/KAP02M</code>
+      i <code>value_template: "{{ value_json.measurements.pm25 }}"</code>.</p>
+  </div>
+</main>
+</body>
+</html>

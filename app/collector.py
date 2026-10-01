@@ -218,8 +218,113 @@ def job_collect():
     cutoff = now - s["history_days"] * 86400
     db.write("DELETE FROM readings WHERE ts < ?", (cutoff,))
     log(f"odczyty: koniec — ok {ok}, brak danych {nodata}, błędy {fail}")
+    aggregate_daily(now)
     job_flags()
     return ok, nodata + fail
+
+
+def aggregate_daily(now=None):
+    """Przelicza dzienne agregaty za wczoraj i dziś (dzień lokalny). Do zbiorczych średnich
+    nie wchodzą odczyty nierealne (powyżej pm_max) — zepsuty czujnik z 2000 µg/m³ zepsułby średnią."""
+    now = int(now or time.time())
+    pm_max = db.setting("pm_max")
+    db.write("""
+        INSERT OR REPLACE INTO daily(name, day, n, pm1_avg, pm25_avg, pm25_max, pm10_avg, pm10_max,
+                                     pressure_sl_avg, humidity_avg)
+        SELECT name, date(ts, 'unixepoch', 'localtime') AS day, COUNT(*),
+               ROUND(AVG(pm1), 2), ROUND(AVG(pm25), 2), MAX(pm25), ROUND(AVG(pm10), 2), MAX(pm10),
+               ROUND(AVG(pressure_sl), 1), ROUND(AVG(humidity), 1)
+        FROM readings
+        WHERE ts >= ? AND (pm25 IS NULL OR pm25 <= ?) AND (pm10 IS NULL OR pm10 <= ?)
+        GROUP BY name, day""", (now - 2 * 86400, pm_max, pm_max))
+    stats_cache["at"] = 0
+
+
+stats_cache = {"at": 0, "data": None}
+
+
+def _median(vals):
+    vals = sorted(vals)
+    if not vals:
+        return None
+    m = len(vals) // 2
+    return round(vals[m] if len(vals) % 2 else (vals[m - 1] + vals[m]) / 2, 1)
+
+
+def _quantile(vals, q):
+    vals = sorted(vals)
+    if not vals:
+        return None
+    return round(vals[min(len(vals) - 1, int(q * len(vals)))], 1)
+
+
+def compute_stats():
+    """Statystyki dla strony i API. Liczone z czujników bez flag (podejrzane nie psują median)."""
+    if stats_cache["data"] and time.time() - stats_cache["at"] < 300:
+        return stats_cache["data"]
+    s = db.get_settings()
+    feats = (cache["sensors"] or {}).get("features", [])
+    clean = [f["properties"] for f in feats if not f["properties"]["suspect"]]
+    pm25 = [p["pm25"] for p in clean if p["pm25"] is not None]
+    t = s["pm25_thresholds"]
+    classes = [0] * (len(t) + 1)
+    for v in pm25:
+        i = 0
+        while i < len(t) and v > t[i]:
+            i += 1
+        classes[i] += 1
+
+    prov = collections.defaultdict(list)
+    for r in db.q("SELECT l.name, k.province FROM latest l JOIN lockers k USING(name)"):
+        prov[r["name"]] = r["province"]
+    by_prov = collections.defaultdict(list)
+    for p in clean:
+        if p["pm25"] is not None:
+            by_prov[prov.get(p["name"]) or "?"].append(p["pm25"])
+    provinces = sorted(({"province": k, "sensors": len(v), "pm25_median": _median(v)} for k, v in by_prov.items()),
+                       key=lambda x: -(x["pm25_median"] or 0))
+
+    def brief(p):
+        return {k: p[k] for k in ("name", "address", "pm25", "pm10")}
+
+    ranked = sorted((p for p in clean if p["pm25"] is not None), key=lambda p: -p["pm25"])
+    counts = dict(db.q1("SELECT COUNT(*) AS lockers, SUM(shipx_level IS NOT NULL) AS sensors_shipx FROM lockers"))
+    last = db.q1("SELECT finished FROM runs WHERE job='collect' AND finished IS NOT NULL AND note='' "
+                 "ORDER BY id DESC LIMIT 1")
+    hist = dict(db.q1("SELECT COUNT(*) AS readings, MIN(ts) AS since FROM readings"))
+    days = db.q1("SELECT COUNT(DISTINCT day) AS days, MIN(day) AS first FROM daily")
+    trend = []
+    for r in db.q("SELECT day, pm25_avg FROM daily WHERE day >= date('now', 'localtime', '-13 days') "
+                  "AND pm25_avg IS NOT NULL ORDER BY day"):
+        if not trend or trend[-1]["day"] != r["day"]:
+            trend.append({"day": r["day"], "vals": []})
+        trend[-1]["vals"].append(r["pm25_avg"])
+    trend = [{"day": d["day"], "pm25_median": _median(d["vals"]), "sensors": len(d["vals"])} for d in trend]
+
+    data = {
+        "updated": int(time.time()),
+        "last_collect": last["finished"] if last else None,
+        "collect_interval_min": s["collect_interval_min"],
+        "lockers_total": counts["lockers"],
+        "sensors_listed": counts["sensors_shipx"],
+        "sensors_reporting": len(feats),
+        "sensors_suspect": len(feats) - len(clean),
+        "gios_stations": len((cache["gios"] or {}).get("features", [])),
+        "pm25": {"median": _median(pm25), "p90": _quantile(pm25, 0.9),
+                 "min": min(pm25) if pm25 else None, "max": max(pm25) if pm25 else None},
+        "pressure_sl_median": _median([p["pressure_sl"] for p in clean if p["pressure_sl"] is not None]),
+        "humidity_median": _median([p["humidity"] for p in clean if p["humidity"] is not None]),
+        "pm25_classes": classes,
+        "pm25_thresholds": t,
+        "provinces": provinces,
+        "worst": [brief(p) for p in ranked[:5]],
+        "best": [brief(p) for p in ranked[::-1][:5]],
+        "history": {"readings": hist["readings"], "since": hist["since"], "raw_days": s["history_days"],
+                    "daily_days": days["days"], "daily_since": days["first"]},
+        "trend": trend,
+    }
+    stats_cache.update(at=time.time(), data=data)
+    return data
 
 
 def job_flags():
@@ -341,6 +446,7 @@ def build_cache():
          "properties": {"name": r["name"], "city": r["city"], "pm25": r["pm25"], "pm10": r["pm10"], "ts": r["ts"]}}
         for r in g]}
     cache["built"] = int(time.time())
+    stats_cache["at"] = 0
 
 
 METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "humidity", "temperature")

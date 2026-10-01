@@ -19,14 +19,16 @@ SETTINGS = [
          label="Lista paczkomatów co (dni)", help="Odświeżanie listy paczkomatów z ShipX (66 zapytań) i ustalanie ID dla nowych czujników."),
     dict(key="id_retry_days", group="Zbieranie danych", type="int", default=7, min=1, max=90,
          label="Ponów nieudane ID po (dniach)", help="Punkty bez strony / bez data-shipx-url próbujemy ponownie po tylu dniach."),
-    dict(key="history_days", group="Zbieranie danych", type="int", default=30, min=1, max=365,
-         label="Historia (dni)", help="Starsze odczyty są kasowane."),
+    dict(key="history_days", group="Zbieranie danych", type="int", default=90, min=1, max=365,
+         label="Historia surowa (dni)", help="Starsze odczyty co przebieg są kasowane. Dzienne agregaty (średnie/maksima na czujnik) zostają na zawsze. ~4000 czujników × 24/dobę ≈ 10–13 MB/dzień."),
 
     # --- jakość danych ---
     dict(key="hide_flagged", group="Jakość danych", type="bool", default=True,
          label="Ukrywaj podejrzane", help="Podejrzane czujniki domyślnie szare/ukryte na mapie (użytkownik może je pokazać)."),
     dict(key="pm_max", group="Jakość danych", type="float", default=500, min=100, max=5000,
          label="PM powyżej (µg/m³) = nierealny", help="Odczyt któregokolwiek pyłu powyżej progu oznacza zepsuty czujnik."),
+    dict(key="pm10_min", group="Jakość danych", type="float", default=0.5, min=0, max=5,
+         label="PM10 poniżej (µg/m³) = martwy", help="Na zewnątrz PM10 praktycznie nie spada do zera. 0 wyłącza regułę."),
     dict(key="humidity_max", group="Jakość danych", type="float", default=99.0, min=80, max=100,
          label="Wilgotność ≥ (%) = zalany", help="Taki odczyt oznacza mokry czujnik; PM też bywa wtedy zawyżone."),
     dict(key="stale_hours", group="Jakość danych", type="int", default=6, min=1, max=168,

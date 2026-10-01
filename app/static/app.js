@@ -439,6 +439,70 @@ function renderNearest() {
   document.querySelectorAll("#nearest li").forEach(li => { li.onclick = () => openSensor(li.dataset.name, true); });
 }
 
+// ------------------------------------------------------------------ statystyki
+
+const num = n => (n ?? 0).toLocaleString("pl-PL");
+
+function renderSummary(st) {
+  const cls = st.pm25.median == null ? null : indexClass("pm25", st.pm25.median);
+  $("#summary").innerHTML = `
+    <div><b>${num(st.sensors_reporting - st.sensors_suspect)}</b><span>czujników działa</span></div>
+    <div><b style="color:${cls == null ? "inherit" : INDEX_COLORS[cls]}">${fmt(st.pm25.median)}</b><span>mediana PM2.5 w PL</span></div>
+    <div><b>${fmt(st.pressure_sl_median, 0)}</b><span>hPa, mediana</span></div>`;
+}
+
+function trendSvg(trend) {
+  if (trend.length < 2) return `<p class="muted">Trend pojawi się po kilku dniach zbierania danych (zbieramy od ${esc(trend[0]?.day || "dziś")}).</p>`;
+  const W = 600, H = 90, pad = 6, ys = trend.map(d => d.pm25_median);
+  const y0 = Math.min(...ys, 0), y1 = Math.max(...ys);
+  const sx = i => pad + (W - 2 * pad) * i / (trend.length - 1);
+  const sy = v => H - pad - (H - 2 * pad) * (v - y0) / (y1 - y0 || 1);
+  const pts = trend.map((d, i) => `${sx(i).toFixed(1)},${sy(d.pm25_median).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#1f6feb" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+    <div class="ramp-labels"><span>${esc(trend[0].day)}</span><span>${fmt(y0)}–${fmt(y1)} µg/m³</span><span>${esc(trend[trend.length - 1].day)}</span></div>`;
+}
+
+function sensorRows(list) {
+  return list.map(p => `<tr class="click" data-name="${esc(p.name)}"><td>${esc(p.name)}<br><span class="muted">${esc(p.address)}</span></td>
+    <td class="num"><b style="color:${colorFor("pm25", p.pm25)}">${fmt(p.pm25)}</b></td><td class="num">${fmt(p.pm10)}</td></tr>`).join("");
+}
+
+async function openStats() {
+  $("#stats-modal").hidden = false;
+  const st = await fetch("/api/stats").then(r => r.json());
+  const total = st.pm25_classes.reduce((a, b) => a + b, 0) || 1;
+  const bar = st.pm25_classes.map((n, i) => n ? `<div style="width:${n / total * 100}%;background:${INDEX_COLORS[i]}" title="${INDEX_LABELS[i]}: ${n}"></div>` : "").join("");
+  const legend = st.pm25_classes.map((n, i) => `<span class="row" style="display:inline-flex;margin-right:10px"><span class="sw" style="background:${INDEX_COLORS[i]}"></span>${INDEX_LABELS[i]} ${Math.round(n / total * 100)}%</span>`).join("");
+  const h = st.history;
+  $("#stats-body").innerHTML = `
+    <div class="kpis">
+      <div><b>${num(st.lockers_total)}</b><span>paczkomatów w Polsce</span></div>
+      <div><b>${num(st.sensors_listed)}</b><span>z czujnikiem powietrza</span></div>
+      <div><b>${num(st.sensors_reporting)}</b><span>przysyła dane</span></div>
+      <div><b>${num(st.sensors_suspect)}</b><span>podejrzanych (pominięte)</span></div>
+      <div><b>${fmt(st.pm25.median)}</b><span>mediana PM2.5 [µg/m³]</span></div>
+      <div><b>${fmt(st.pm25.p90)}</b><span>90% czujników poniżej</span></div>
+      <div><b>${fmt(st.humidity_median, 0)}%</b><span>mediana wilgotności</span></div>
+      <div><b>${num(st.gios_stations)}</b><span>stacji GIOŚ (odniesienie)</span></div>
+    </div>
+    <h2>Jakość powietrza teraz (PM2.5)</h2>
+    <div class="bar">${bar}</div><div style="font-size:12px">${legend}</div>
+    <h2>Mediana PM2.5 w Polsce, ostatnie dni</h2><div class="trend">${trendSvg(st.trend)}</div>
+    <div class="cols">
+      <div><h2>Najwyższe PM2.5 teraz</h2><table class="stat-table"><tr><th>Paczkomat</th><th>PM2.5</th><th>PM10</th></tr>${sensorRows(st.worst)}</table></div>
+      <div><h2>Najczystsze powietrze teraz</h2><table class="stat-table"><tr><th>Paczkomat</th><th>PM2.5</th><th>PM10</th></tr>${sensorRows(st.best)}</table></div>
+    </div>
+    <h2>Województwa (mediana PM2.5)</h2>
+    <table class="stat-table"><tr><th>Województwo</th><th class="num">Czujników</th><th class="num">PM2.5</th></tr>
+      ${st.provinces.map(p => `<tr><td>${esc(p.province)}</td><td class="num">${num(p.sensors)}</td><td class="num"><b style="color:${colorFor("pm25", p.pm25_median)}">${fmt(p.pm25_median)}</b></td></tr>`).join("")}</table>
+    <p class="muted">Ostatni odczyt ${ago(st.last_collect)}, odświeżanie co ${st.collect_interval_min} min. W bazie ${num(h.readings)} odczytów
+      (surowe trzymamy ${h.raw_days} dni), dzienne średnie od ${esc(h.daily_since || "dziś")} — bezterminowo.
+      Statystyki liczone bez czujników oznaczonych jako podejrzane. Dane nieoficjalne (InPost), stacje GIOŚ jako odniesienie.</p>`;
+  document.querySelectorAll("#stats-body tr.click").forEach(tr => {
+    tr.onclick = () => { $("#stats-modal").hidden = true; openSensor(tr.dataset.name, true); };
+  });
+}
+
 // ------------------------------------------------------------------ start
 
 async function load() {
@@ -463,6 +527,7 @@ async function load() {
     $("#title").textContent = cfg.site_title;
   }
   map.getSource("gios").setData(gios);
+  fetch("/api/stats").then(r => r.json()).then(renderSummary).catch(() => {});
   computeDomains();
   state.hexRes = null;
   render();
@@ -479,6 +544,10 @@ function setupUi() {
   $("#show-gios").onchange = e => { state.showGios = e.target.checked; render(); };
   $("#search").onsubmit = e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) search(q); };
   $("#panel-toggle").onclick = () => $("#panel").classList.toggle("collapsed");
+  $("#stats-open").onclick = openStats;
+  $("#stats-close").onclick = () => { $("#stats-modal").hidden = true; };
+  $("#stats-modal").onclick = e => { if (e.target.id === "stats-modal") e.target.hidden = true; };
+  document.addEventListener("keydown", e => { if (e.key === "Escape") $("#stats-modal").hidden = true; });
 }
 
 setupUi();

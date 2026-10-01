@@ -42,6 +42,16 @@ CREATE TABLE IF NOT EXISTS latest (
     flags TEXT DEFAULT ''
 );
 
+-- dzienne agregaty na czujnik — trzymane bezterminowo (surowe odczyty kasuje history_days)
+CREATE TABLE IF NOT EXISTS daily (
+    name TEXT, day TEXT,           -- day: YYYY-MM-DD, czas lokalny
+    n INTEGER,
+    pm1_avg REAL, pm25_avg REAL, pm25_max REAL, pm10_avg REAL, pm10_max REAL,
+    pressure_sl_avg REAL, humidity_avg REAL,
+    PRIMARY KEY (name, day)
+);
+CREATE INDEX IF NOT EXISTS daily_day ON daily(day);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
 CREATE TABLE IF NOT EXISTS runs (

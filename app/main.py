@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import collector, config, db, sources
+from . import api_v1, collector, config, db, sources
 from .quality import FLAG_LABELS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -212,6 +212,11 @@ def api_search(q: str, request: Request):
 _geo = {"last": 0.0}
 
 
+@app.get("/api/stats")
+def api_stats():
+    return JSONResponse(collector.compute_stats(), headers={"Cache-Control": "max-age=120"})
+
+
 @app.get("/api/status")
 def api_status():
     last = db.q1("SELECT finished FROM runs WHERE job='collect' AND finished IS NOT NULL ORDER BY id DESC LIMIT 1")
@@ -236,7 +241,7 @@ async def admin_save(request: Request):
         raise HTTPException(400, str(e)) from None
     if "request_rate" in saved:
         sources.inpost_limiter.rate = saved["request_rate"]
-    if any(k in saved for k in ("pm_max", "humidity_max", "stale_hours", "outlier_radius_km", "outlier_min_neighbors",
+    if any(k in saved for k in ("pm_max", "pm10_min", "humidity_max", "stale_hours", "outlier_radius_km", "outlier_min_neighbors",
                                 "outlier_factor", "outlier_abs")):
         collector.start_job("flags")
     collector.log(f"admin: zmienione parametry {', '.join(saved)}")
@@ -326,9 +331,15 @@ def index():
     return FileResponse(os.path.join(STATIC, "index.html"))
 
 
+@app.get("/api")
+def api_docs():
+    return FileResponse(os.path.join(STATIC, "api.html"))
+
+
 @app.get("/admin")
 def admin_page():
     return FileResponse(os.path.join(STATIC, "admin.html"))
 
 
+app.include_router(api_v1.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
