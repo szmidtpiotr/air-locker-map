@@ -45,6 +45,8 @@ async def security_headers(request: Request, call_next):
     h["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
     if request.url.path.startswith("/api/admin"):
         h["Cache-Control"] = "no-store"
+    elif request.url.path.startswith("/static/"):
+        h["Cache-Control"] = "public, max-age=31536000, immutable" if request.url.query.startswith("v=") else "no-cache"
     return response
 
 
@@ -569,19 +571,36 @@ async def admin_sensor(name: str, request: Request):
 
 # ---------------------------------------------------------------- strony
 
+def _asset_version():
+    """Znacznik wersji plików strony — zmienia się przy każdym wdrożeniu (najnowsza data modyfikacji)."""
+    newest = max(os.path.getmtime(os.path.join(STATIC, f)) for f in os.listdir(STATIC)
+                 if f.endswith((".js", ".css")))
+    return str(int(newest))
+
+
+def _html(name):
+    """HTML z ?v=<wersja> przy skryptach i stylach. Bez tego przeglądarka trzymała stary app.js
+    (serwer nie podawał Cache-Control, więc zgadywała czas ważności) i nie widać było poprawek."""
+    v = _asset_version()
+    with open(os.path.join(STATIC, name), encoding="utf-8") as f:
+        html = f.read()
+    html = re.sub(r'(/static/[\w.-]+\.(?:js|css))"', rf'\1?v={v}"', html)
+    return Response(html, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC, "index.html"))
+    return _html("index.html")
 
 
 @app.get("/api")
 def api_docs():
-    return FileResponse(os.path.join(STATIC, "api.html"))
+    return _html("api.html")
 
 
 @app.get("/admin")
 def admin_page():
-    return FileResponse(os.path.join(STATIC, "admin.html"))
+    return _html("admin.html")
 
 
 app.include_router(api_v1.router)
