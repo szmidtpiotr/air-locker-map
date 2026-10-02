@@ -30,6 +30,7 @@ const TRANSPARENT_PNG = "/static/empty.png";  // pusty obraz startowy; data: blo
 
 const state = {
   frames: [], frameIdx: null, frameValues: null, playing: null, showWind: false, showIsobars: false,
+  period: { hours: 24 }, periodDomains: {},
   cfg: null, data: null, metric: "pm25", view: "points",
   showSuspect: false, showGios: true, domains: {}, hexRes: null, searchMarker: null, origin: null,
 };
@@ -114,6 +115,8 @@ function computeDomains() {
     const vals = state.data.features.filter(f => !f.properties.suspect && f.properties[k] != null)
       .map(f => f.properties[k]).sort((a, b) => a - b);
     let lo = quantile(vals, 0.03), hi = quantile(vals, 0.97);
+    const pd = state.periodDomains[k];     // skala wspólna dla wybranego okresu — stałe kolory w animacji
+    if (pd) { lo = Math.min(lo, pd.lo); hi = Math.max(hi, pd.hi); }
     if (hi - lo < 1) { lo -= 1; hi += 1; }
     state.domains[k] = [Math.floor(lo), Math.ceil(hi)];
   }
@@ -255,14 +258,22 @@ function setupLayers() {
       .setHTML(`<div class="pop"><b>${m.label}: ${fmt(p.value, m.digits ?? 1)} ${m.unit}</b><div class="meta">mediana z ${p.count} czujn.</div></div>`)
       .addTo(map);
   });
-  map.on("zoomend", () => { if (state.view === "hex") refreshHex(); });
+  map.on("zoomend", () => {
+    if (state.view === "hex") refreshHex();
+    if (state.sensorsStale && map.getZoom() >= 8) render();
+  });
 }
 
 function render() {
   const metric = state.metric, m = METRICS[metric];
-  const feats = visibleFeatures();
-  const fc = { type: "FeatureCollection", features: feats };
-  map.getSource("sensors").setData(fc);
+  // W widoku plamy/sześciokątów kropki są widoczne dopiero od zoomu ~8 — bez tego każda klatka animacji
+  // przeliczała grupowanie ~3600 punktów, których i tak nie widać.
+  if (state.view === "points" || map.getZoom() >= 8) {
+    map.getSource("sensors").setData({ type: "FeatureCollection", features: visibleFeatures() });
+    state.sensorsStale = false;
+  } else {
+    state.sensorsStale = true;
+  }
 
   const val = ["get", metric];
   map.setPaintProperty("points", "circle-color",
@@ -305,7 +316,7 @@ function render() {
     fetch("/api/wind").then(r => r.json()).then(d => map.getSource("wind").setData(d));
   }
   if (v === "hex") refreshHex(true);
-  if (v === "heat") refreshSurface();
+  state.surfaceReady = v === "heat" ? refreshSurface() : Promise.resolve();
   document.querySelectorAll("#views button").forEach(b => b.classList.toggle("active", b.dataset.view === state.view));
   document.querySelectorAll("#metrics button").forEach(b => b.classList.toggle("active", b.dataset.metric === metric));
   $("#view-hint").textContent = {
@@ -347,10 +358,27 @@ function surfaceUrl(metric, ts) {
     (ts ? `&ts=${ts}` : `&t=${state.lastCollect || ""}`);
 }
 
-function refreshSurface() {
+const imageCache = new Map();   // adres → Promise wczytanego obrazu
+
+function preloadImage(url) {
+  if (!imageCache.has(url)) {
+    imageCache.set(url, new Promise(resolve => {
+      const img = new Image();
+      img.onload = img.onerror = () => resolve();
+      img.src = url;
+    }));
+    if (imageCache.size > 200) imageCache.delete(imageCache.keys().next().value);
+  }
+  return imageCache.get(url);
+}
+
+// Zwraca Promise — animacja czeka, aż obraz klatki będzie gotowy, zamiast przeskakiwać dalej.
+async function refreshSurface() {
   const url = surfaceUrl(state.metric, frameTs());
   if (url === state.surfaceUrl) return;
   state.surfaceUrl = url;
+  await preloadImage(url);
+  if (state.surfaceUrl !== url) return;    // w międzyczasie wybrano inną klatkę
   map.getSource("surface").updateImage({ url, coordinates: SURFACE_CORNERS });
 }
 
@@ -373,6 +401,9 @@ function renderLegend() {
   if (state.showGios && (metric === "pm25" || metric === "pm10"))
     html += `<div class="row"><span class="sw" style="background:#fff;border:2.5px solid #1d2330;border-radius:50%"></span>stacja GIOŚ</div>`;
   if (m.note) html += `<div class="note">${m.note}</div>`;
+  if (m.kind === "ramp" && !m.fixed && state.periodDomains[metric] && state.frames.length) {
+    html += `<div class="note">Skala wspólna dla okresu ${dayHhmm(state.frames[0].ts)} – ${dayHhmm(state.frames[state.frames.length - 1].ts)}.</div>`;
+  }
   if (state.frameIdx !== null && m.live) html += `<div class="note"><b>Ta wielkość nie ma historii</b> — przesuń suwak na „Teraz”.</div>`;
   if (state.showWind) html += `<div class="note">Strzałki: kierunek, w który wieje wiatr; kolor i wielkość — prędkość (Open-Meteo, co godzinę).</div>`;
   $("#legend").innerHTML = html;
@@ -587,19 +618,75 @@ function windArrowImage() {
 
 const fmtTime = ts => new Date(ts * 1000).toLocaleString("pl-PL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
 
+// Okres suwaka: gotowy (ostatnie N godzin, koniec = teraz) albo własny od–do.
+function periodRange() {
+  const now = Date.now() / 1000;
+  if (state.period.hours) return { from: now - state.period.hours * 3600 - 900, to: now + 60, live: true };
+  return { from: state.period.from, to: state.period.to, live: state.period.to >= now - 1800 };
+}
+
 async function loadFrames() {
-  state.frames = await fetch("/api/frames").then(r => r.json()).catch(() => []);
+  const r = periodRange();
+  const hours = Math.ceil((Date.now() / 1000 - r.from) / 3600) + 1;
+  const all = await fetch(`/api/frames?hours=${hours}`).then(x => x.json()).catch(() => []);
+  state.frames = all.filter(f => f.ts >= r.from && f.ts <= r.to);
+  state.periodLive = r.live;
   const sl = $("#time-slider");
   sl.max = Math.max(state.frames.length - 1, 0);
-  if (state.frameIdx === null) sl.value = sl.max;
-  $("#time-box").hidden = state.frames.length < 2;
-  $("#time-hint").textContent = state.frames.length < 24
-    ? `Zebrane klatki: ${state.frames.length} (pełne 24 h będą po dobie zbierania).` : "";
+  if (state.frameIdx === null || state.frameIdx > sl.max) {
+    state.frameIdx = r.live ? null : (state.frames.length ? 0 : null);
+    sl.value = r.live ? sl.max : 0;
+  }
+  $("#time-box").hidden = all.length < 2;
+  const first = state.frames[0], last = state.frames[state.frames.length - 1];
+  $("#time-hint").textContent = !state.frames.length ? "W tym okresie nie ma odczytów."
+    : `${state.frames.length} klatek: ${dayHhmm(first.ts)} – ${dayHhmm(last.ts)}. Skala kolorów wspólna dla całego okresu.`;
+  await loadPeriodDomains();
+}
+
+async function loadPeriodDomains() {
+  if (!state.frames.length) { state.periodDomains = {}; return; }
+  const a = state.frames[0].ts, b = state.frames[state.frames.length - 1].ts;
+  const ramp = Object.entries(METRICS).filter(([k, m]) => m.kind === "ramp" && !m.fixed && !m.live).map(([k]) => k);
+  const res = await Promise.all(ramp.map(k => fetch(`/api/domain?metric=${k}&ts_from=${a}&ts_to=${b}`).then(x => x.json()).catch(() => ({}))));
+  state.periodDomains = {};
+  ramp.forEach((k, i) => { if (res[i].lo != null) state.periodDomains[k] = res[i]; });
+  computeDomains();
+}
+
+async function changePeriod() {
+  if (state.playing) togglePlay();
+  state.frameIdx = null;
+  state.frameValues = null;
+  await loadFrames();
+  state.hexRes = null;
+  if (state.frameIdx === null) { $("#time-label").textContent = "na żywo"; render(); } else setFrame(state.frameIdx);
+}
+
+const frameCache = new Map();   // "ts|metric" → Promise wartości klatki
+
+function frameValues(ts, metric) {
+  const key = `${ts}|${metric}`;
+  if (!frameCache.has(key)) {
+    frameCache.set(key, fetch(`/api/frame?ts=${ts}&metric=${metric}`).then(r => r.json()).then(r => r.values)
+      .catch(() => { frameCache.delete(key); return {}; }));
+    if (frameCache.size > 400) frameCache.delete(frameCache.keys().next().value);
+  }
+  return frameCache.get(key);
+}
+
+// pobieranie z wyprzedzeniem kilku kolejnych klatek (wartości i — w widoku plamy — obrazy)
+function prefetchFrames(from, count = 3) {
+  for (const f of state.frames.slice(from, from + count)) {
+    if (!METRICS[state.metric].live) frameValues(f.ts, state.metric);
+    if (state.view === "heat") preloadImage(surfaceUrl(state.metric, f.ts));
+  }
 }
 
 async function setFrame(idx) {
   const last = state.frames.length - 1;
-  if (idx === null || idx >= last) {      // ostatnia klatka = bieżące dane (z flagami, trendem, GIOŚ)
+  // ostatnia klatka okresu kończącego się teraz = bieżące dane (z flagami, trendem, GIOŚ)
+  if (idx === null || (idx >= last && state.periodLive)) {
     state.frameIdx = null;
     state.frameValues = null;
     $("#time-slider").value = last;
@@ -611,9 +698,9 @@ async function setFrame(idx) {
     if (METRICS[state.metric].live) {      // trend ciśnienia nie ma historii
       state.frameValues = {};
     } else {
-      const r = await fetch(`/api/frame?ts=${f.ts}&metric=${state.metric}`).then(r => r.json());
+      const values = await frameValues(f.ts, state.metric);
       if (state.frameIdx !== idx) return;  // użytkownik przesunął suwak dalej
-      state.frameValues = r.values;
+      state.frameValues = values;
     }
   }
   $("#time-live").classList.toggle("active", state.frameIdx === null);
@@ -621,26 +708,31 @@ async function setFrame(idx) {
   render();
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 function togglePlay() {
   if (state.playing) {
-    clearInterval(state.playing);
-    state.playing = null;
+    state.playing = null;                   // pętla sama się zatrzyma przy następnym obrocie
     $("#time-play").textContent = "▶";
     return;
   }
   if (state.frames.length < 2) return;
-  let i = state.frameIdx === null ? 0 : state.frameIdx;
+  const run = state.playing = Symbol("play");
   $("#time-play").textContent = "❚❚";
-  if (state.view === "heat") {             // plamy kolejnych klatek pobieramy z wyprzedzeniem
-    state.frames.forEach(f => { new Image().src = surfaceUrl(state.metric, f.ts); });
-  }
-  const step = () => {
-    setFrame(i);
-    i += 1;
-    if (i >= state.frames.length) togglePlay();
-  };
-  step();
-  state.playing = setInterval(step, 1200);
+  (async () => {
+    let i = state.frameIdx === null || state.frameIdx >= state.frames.length - 1 ? 0 : state.frameIdx;
+    while (state.playing === run && i < state.frames.length) {
+      prefetchFrames(i + 1);
+      const t0 = performance.now();
+      await setFrame(i);
+      await state.surfaceReady;             // w widoku plamy czekamy na obraz klatki
+      $("#time-slider").value = i;
+      const pause = Number($("#time-speed").value) - (performance.now() - t0);
+      if (pause > 0) await sleep(pause);    // stałe tempo, jeśli klatka wczytała się szybciej
+      i += 1;
+    }
+    if (state.playing === run) togglePlay();
+  })();
 }
 
 // #lat=52.23&lon=20.96&z=14 — link z karty HA i do udostępniania konkretnego miejsca
@@ -905,6 +997,25 @@ function setupUi() {
   $("#time-slider").oninput = e => { if (state.playing) togglePlay(); setFrame(Number(e.target.value)); };
   $("#time-live").onclick = () => { if (state.playing) togglePlay(); setFrame(null); };
   $("#time-play").onclick = togglePlay;
+  const toLocal = ts => { const d = new Date(ts * 1000); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+  $("#time-period").onchange = e => {
+    const v = e.target.value;
+    $("#time-custom").hidden = v !== "custom";
+    if (v === "custom") {
+      const now = Date.now() / 1000;
+      if (!$("#time-from").value) $("#time-from").value = toLocal(now - 24 * 3600);
+      if (!$("#time-to").value) $("#time-to").value = toLocal(now);
+      return;
+    }
+    state.period = { hours: Number(v) };
+    changePeriod();
+  };
+  $("#time-apply").onclick = () => {
+    const from = Date.parse($("#time-from").value) / 1000, to = Date.parse($("#time-to").value) / 1000;
+    if (!isFinite(from) || !isFinite(to) || to <= from) { alert("Podaj poprawny zakres: „od” wcześniej niż „do”."); return; }
+    state.period = { from, to };
+    changePeriod();
+  };
   $("#alert-origin").onclick = () => state.origin && openAlert(state.origin[1], state.origin[0], (state.originLabel || "").split(",")[0]);
   $("#alert-close").onclick = () => { $("#alert-modal").hidden = true; };
   $("#alert-modal").onclick = e => { if (e.target.id === "alert-modal") e.target.hidden = true; };

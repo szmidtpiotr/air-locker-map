@@ -45,9 +45,25 @@
 
     <section id="time-box">
       <h2>Czas <span id="time-label" class="time-label">na żywo</span></h2>
+      <div class="time-row period-row">
+        <label for="time-period" class="muted">Okres</label>
+        <select id="time-period">
+          <option value="6">6 h</option><option value="12">12 h</option><option value="24" selected>24 h</option>
+          <option value="72">3 dni</option><option value="168">7 dni</option><option value="custom">własny…</option>
+        </select>
+      </div>
+      <div class="time-row custom-row" id="time-custom" hidden>
+        <input type="datetime-local" id="time-from" aria-label="Od"> –
+        <input type="datetime-local" id="time-to" aria-label="Do">
+        <button id="time-apply" class="chip-btn">Pokaż</button>
+      </div>
       <div class="time-row">
         <button id="time-play" class="icon-btn" title="Odtwórz ostatnie 24 h" aria-label="Odtwórz">▶</button>
         <input type="range" id="time-slider" min="0" max="0" value="0" aria-label="Czas odczytu">
+        <select id="time-speed" title="Prędkość animacji" aria-label="Prędkość animacji">
+          <option value="2400">0,5×</option><option value="1200" selected>1×</option>
+          <option value="600">2×</option><option value="300">4×</option>
+        </select>
         <button id="time-live" class="chip-btn" title="Wróć do bieżących odczytów">Teraz</button>
       </div>
       <p class="hint" id="time-hint"></p>

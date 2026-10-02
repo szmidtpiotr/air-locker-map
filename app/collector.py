@@ -731,6 +731,23 @@ def metric_points(metric, ts=None, include_suspect=False):
 _frames_memo = {}
 
 
+def value_domain(metric, ts_from, ts_to):
+    """Zakres skali (kwantyle 3% i 97%) dla wielkości w okresie — wspólny dla wszystkich klatek animacji,
+    żeby kolory dało się porównywać między godzinami (inaczej każda klatka rozciągała się na całą skalę)."""
+    key = ("dom", metric, ts_from, ts_to)
+    if key in cache.setdefault("frames", {}):
+        return cache["frames"][key]
+    skip = {f["properties"]["name"] for f in (cache["sensors"] or {}).get("features", []) if f["properties"]["suspect"]}
+    vals = sorted(r["v"] for r in db.q(f"SELECT name, {metric} AS v FROM readings WHERE ts BETWEEN ? AND ? "
+                                       f"AND {metric} IS NOT NULL", (ts_from, ts_to)) if r["name"] not in skip)
+    if not vals:
+        return None
+    out = {"lo": round(vals[int(0.03 * (len(vals) - 1))], 1), "hi": round(vals[int(0.97 * (len(vals) - 1))], 1),
+           "n": len(vals)}
+    cache["frames"][key] = out
+    return out
+
+
 def frames(hours=24):
     """Pełne przebiegi z ostatnich godzin (pomijamy przerwane, z małą liczbą odczytów). Pamięć 60 s."""
     memo = _frames_memo.get(hours)

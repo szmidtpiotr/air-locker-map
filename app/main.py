@@ -154,11 +154,12 @@ def api_sensors():
 
 
 _surface_lock = threading.Lock()
+_hist_cache = {}   # plamy klatek historycznych: (wielkość, podejrzane, kolory, ts) → PNG; ~50 KB/szt.
 _STOP = re.compile(r"^-?\d+(\.\d+)?:#[0-9a-fA-F]{6}$")
 
 
 def _check_ts(ts):
-    if ts is not None and not any(f["ts"] == ts for f in collector.frames(26)):
+    if ts is not None and not any(f["ts"] == ts for f in collector.frames(db.setting("history_days") * 24)):
         raise HTTPException(404, "nie ma takiej klatki")
 
 
@@ -171,9 +172,18 @@ def api_hex(res: int = 6, metric: str = "pm25", suspect: bool = False, ts: int |
 
 
 @app.get("/api/frames")
-def api_frames():
-    """Klatki suwaka czasu: pełne przebiegi z ostatnich 24 h."""
-    return JSONResponse(collector.frames(24), headers={"Cache-Control": "max-age=120"})
+def api_frames(hours: int = 24):
+    """Klatki suwaka czasu: pełne przebiegi z ostatnich `hours` godzin (maks. tyle, ile trzymamy historii)."""
+    hours = max(1, min(hours, db.setting("history_days") * 24))
+    return JSONResponse(collector.frames(hours), headers={"Cache-Control": "max-age=120"})
+
+
+@app.get("/api/domain")
+def api_domain(metric: str, ts_from: int, ts_to: int):
+    """Wspólny zakres skali dla okresu (animacja ma stałe kolory)."""
+    if metric not in collector.HISTORY_METRICS or ts_to < ts_from or ts_to - ts_from > 400 * 86400:
+        raise HTTPException(400, "zły parametr")
+    return JSONResponse(collector.value_domain(metric, ts_from, ts_to) or {}, headers={"Cache-Control": "max-age=600"})
 
 
 @app.get("/api/frame")
@@ -195,16 +205,20 @@ def api_surface(metric: str = "pm25", stops: str = "", suspect: bool = False, ts
         raise HTTPException(400, "złe przystanki kolorów")
     _check_ts(ts)
     stop_list = sorted((float(v), c) for v, c in (p.split(":") for p in parts))
-    key = (metric, suspect, stops, ts, collector.cache["built"])
-    cached = collector.cache.setdefault("surface", {})
+    # klatka z przeszłości się nie zmienia — trzymamy ją w osobnej pamięci, której przebudowa danych nie czyści
+    # (wcześniej każde zadanie kolektora kasowało cache i animacja liczyła każdą plamę od nowa, ~1 s na klatkę)
+    if ts:
+        key, cached = (metric, suspect, stops, ts), _hist_cache
+    else:
+        key, cached = (metric, suspect, stops, collector.cache["built"]), collector.cache.setdefault("surface", {})
     if key not in cached:
         with _surface_lock:  # jedno liczenie naraz — to najdroższy endpoint
             if key not in cached:
                 pts = collector.metric_points(metric, ts, suspect)
                 if len(pts) < 3:
                     raise HTTPException(404, "za mało danych")
-                if len(cached) > 60:
-                    cached.clear()
+                if len(cached) > (300 if ts else 60):
+                    cached.pop(next(iter(cached)))      # najstarszy wpis
                 cached[key] = surface.render(pts, stop_list)
     # klatki z przeszłości się nie zmieniają — przeglądarka może je trzymać długo
     age = 86400 if ts else 300
@@ -217,8 +231,10 @@ def api_isobars(ts: int | None = None, step: float = 2.0):
     if not 0.5 <= step <= 5:
         raise HTTPException(400, "krok 0,5–5 hPa")
     _check_ts(ts)
-    key = ("iso", ts, step, collector.cache["built"])
-    cached = collector.cache.setdefault("surface", {})
+    if ts:
+        key, cached = ("iso", ts, step), _hist_cache
+    else:
+        key, cached = ("iso", ts, step, collector.cache["built"]), collector.cache.setdefault("surface", {})
     if key not in cached:
         with _surface_lock:
             if key not in cached:
