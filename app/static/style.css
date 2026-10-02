@@ -78,8 +78,19 @@ button.icon { border: 0; background: none; font-size: 20px; line-height: 1; padd
 .pop td small { color: var(--muted); }
 .pop .warn { background: #fffaeb; color: var(--warn); padding: 6px 8px; border-radius: 6px; margin: 8px 0 0; }
 .pop .meta { color: var(--muted); font-size: 12px; margin-top: 8px; }
-.pop svg { display: block; width: 100%; height: 56px; margin-top: 8px; }
+.pop svg { display: block; width: 100%; }
 .pop .chart-label { color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; }
+
+/* osie wykresów */
+.chart-wrap { display: flex; gap: 4px; margin-top: 4px; }
+.chart-wrap .y-axis { position: relative; width: 34px; height: 64px; flex: none; }
+.chart-wrap .y-axis span { position: absolute; right: 0; transform: translateY(-50%); font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chart-wrap .plot { flex: 1; min-width: 0; }
+.chart-wrap svg, .pop .profile-chart svg { display: block; width: 100%; height: 64px; margin: 0; }
+.x-axis { position: relative; height: 14px; }
+.x-axis span { position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; top: 1px; }
+.profile-chart { margin-top: 4px; }
+.axis-note { font-size: 10px; color: var(--muted); text-align: right; }
 
 /* suwak czasu */
 .time-label { text-transform: none; letter-spacing: 0; color: var(--fg); font-weight: 600; margin-left: 6px; }

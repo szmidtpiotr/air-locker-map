@@ -403,8 +403,11 @@ def sensor_profile(name):
                           strftime('%w', ts, 'unixepoch', 'localtime') IN ('0', '6') AS weekend,
                           AVG(pm25) AS pm25, AVG(pm10) AS pm10, COUNT(*) AS n
                    FROM readings WHERE name = ? AND pm25 <= ? GROUP BY h, weekend""", (name, pm_max))
-    days = db.q1("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) AS d FROM readings WHERE name = ?", (name,))
-    out = {"days": days["d"], "workdays": [None] * 24, "weekend": [None] * 24, "all": [None] * 24}
+    span = db.q1("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) AS d, COUNT(DISTINCT ts) AS frames, "
+                 "MIN(ts) AS first, MAX(ts) AS last FROM readings WHERE name = ?", (name,))
+    # „dni” kalendarzowe wprowadzały w błąd (wieczór + noc = „2 dni”) — podajemy prawdziwy zakres i liczbę odczytów
+    out = {"days": span["d"], "frames": span["frames"], "first": span["first"], "last": span["last"],
+           "workdays": [None] * 24, "weekend": [None] * 24, "all": [None] * 24}
     acc = collections.defaultdict(lambda: [0.0, 0])
     for r in rows:
         out["weekend" if r["weekend"] else "workdays"][r["h"]] = round(r["pm25"], 1)
@@ -412,6 +415,7 @@ def sensor_profile(name):
         acc[r["h"]][1] += r["n"]
     for h, (tot, n) in acc.items():
         out["all"][h] = round(tot / n, 1)
+    out["hours_covered"] = sum(1 for v in out["all"] if v is not None)
     return out
 
 
@@ -424,8 +428,10 @@ def national_profile():
     prof = [None] * 24
     for r in rows:
         prof[r["h"]] = r["pm25"]
-    days = db.q1("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) AS d FROM readings")
-    cache["profile"] = {"pm25": prof, "days": days["d"]}
+    span = db.q1("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) AS d, COUNT(DISTINCT ts) AS frames, "
+                 "MIN(ts) AS first, MAX(ts) AS last FROM readings")
+    cache["profile"] = {"pm25": prof, "days": span["d"], "frames": span["frames"], "first": span["first"],
+                        "last": span["last"], "hours_covered": sum(1 for v in prof if v is not None)}
 
 
 def compare_gios(radius_km=3.0):

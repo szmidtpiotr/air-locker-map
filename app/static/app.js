@@ -425,6 +425,37 @@ async function openSensor(name, fly = false) {
   if (ab) ab.onclick = () => openAlert(f.geometry.coordinates[1], f.geometry.coordinates[0], p.address);
 }
 
+const hhmm = ts => new Date(ts * 1000).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+const dayHhmm = ts => new Date(ts * 1000).toLocaleString("pl-PL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+// Wykres z osią wartości (lewo) i godzin (dół). Opisy w HTML, nie w SVG — przy preserveAspectRatio="none"
+// tekst w SVG rozciągałby się razem z wykresem.
+function lineChartHtml(rows, metric, color) {
+  const m = METRICS[metric], d = m.digits ?? 1;
+  const xs = rows.map(x => x.ts), ys = rows.map(x => x[metric]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y1 - y0 < 1e-6) { y0 -= 1; y1 += 1; }
+  const W = 280, H = 64;
+  const sx = t => W * (t - x0) / (x1 - x0 || 1);
+  const sy = v => H - H * (v - y0) / (y1 - y0);
+  const pts = rows.map(x => `${sx(x.ts).toFixed(1)},${sy(x[metric]).toFixed(1)}`).join(" ");
+  const grid = [0, 0.5, 1].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="#e4e7ec" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join("");
+  const yTicks = [[y1, 0], [(y0 + y1) / 2, 50], [y0, 100]]
+    .map(([v, top]) => `<span style="top:${top}%">${fmt(v, d)}</span>`).join("");
+  // godziny: pełne godziny co 3–6 h zależnie od zakresu, plus koniec
+  const spanH = (x1 - x0) / 3600, step = spanH > 12 ? 6 : spanH > 4 ? 3 : 1;
+  const ticks = [];
+  for (let t = Math.ceil(x0 / 3600) * 3600; t <= x1; t += 3600) {
+    if (new Date(t * 1000).getHours() % step === 0) ticks.push(t);
+  }
+  const xTicks = ticks.map(t => `<span style="left:${(100 * (t - x0) / (x1 - x0 || 1)).toFixed(1)}%">${hhmm(t).slice(0, 2)}</span>`).join("");
+  return `<div class="chart-wrap"><div class="y-axis">${yTicks}</div>
+      <div class="plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+      <div class="x-axis">${xTicks}</div></div></div>`;
+}
+
 async function drawChart(name) {
   const metric = state.metric, m = METRICS[metric];
   const r = await fetch(`/api/history/${encodeURIComponent(name)}?hours=24`);
@@ -432,31 +463,34 @@ async function drawChart(name) {
   const box = [...document.querySelectorAll(".pop .chart")].find(el => el.dataset.name === name);
   if (!box) return;
   if (rows.length < 2) {
-    box.innerHTML = `<div class="meta">Wykres 24 h pojawi się po kilku odczytach.</div>`;
+    box.innerHTML = `<div class="meta">Wykres pojawi się po kilku odczytach.</div>`;
     return;
   }
-  const W = 280, H = 56, pad = 3;
-  const xs = rows.map(x => x.ts), ys = rows.map(x => x[metric]);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const sx = t => pad + (W - 2 * pad) * (t - x0) / (x1 - x0 || 1);
-  const sy = v => H - pad - (H - 2 * pad) * (v - y0) / (y1 - y0 || 1);
-  const pts = rows.map(x => `${sx(x.ts).toFixed(1)},${sy(x[metric]).toFixed(1)}`).join(" ");
-  const stroke = m.kind === "index" ? colorFor(metric, Math.max(...ys)) : "#1f6feb";
-  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-      <polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
-    <div class="chart-label"><span>${m.label}, ostatnie 24 h</span><span>${fmt(y0, m.digits ?? 1)}–${fmt(y1, m.digits ?? 1)} ${m.unit}</span></div>`;
+  const ys = rows.map(x => x[metric]);
+  const color = m.kind === "index" ? colorFor(metric, Math.max(...ys)) : "#1f6feb";
+  const first = rows[0].ts, last = rows[rows.length - 1].ts;
+  const spanH = Math.round((last - first) / 3600);
+  box.innerHTML = `<div class="chart-label"><span>${m.label} [${m.unit}]</span>
+      <span>${spanH >= 23 ? "ostatnie 24 h" : `od ${dayHhmm(first)} (${spanH} h)`}</span></div>
+    ${lineChartHtml(rows, metric, color)}`;
+}
+
+function coverageText(p) {
+  if (!p.first) return "";
+  return `${num(p.frames)} odczytów od ${dayHhmm(p.first)}`;
 }
 
 async function drawProfile(name) {
   const box = [...document.querySelectorAll(".pop .profile")].find(el => el.dataset.name === name);
   if (!box) return;
   const r = await fetch(`/api/profile/${encodeURIComponent(name)}`).then(r => r.json()).catch(() => null);
-  if (!r || r.days < 2) {
-    box.innerHTML = `<div class="meta">Profil dobowy (o której godzinie jest najgorzej) pojawi się po 2 dobach zbierania.</div>`;
+  if (!r || (r.hours_covered || 0) < 6) {
+    box.innerHTML = `<div class="meta">Profil dobowy (o której godzinie jest najgorzej) pojawi się, gdy zbierzemy pomiary z różnych pór dnia.</div>`;
     return;
   }
-  box.innerHTML = `<div class="chart-label"><span>PM2.5 o różnych porach dnia</span><span>${r.days} dni</span></div>${profileSvg(r.all, 54)}`;
+  box.innerHTML = `<div class="chart-label"><span>PM2.5 o różnych porach dnia</span><span>${coverageText(r)}</span></div>
+    ${profileSvg(r.all, 54)}
+    ${r.hours_covered < 24 ? `<div class="meta">Szare = o tej porze jeszcze nie mierzyliśmy (pełna doba po 24 h zbierania).</div>` : ""}`;
 }
 
 function openGios(f) {
@@ -721,17 +755,22 @@ function renderSummary(st) {
 }
 
 // 24 słupki (godziny doby), kolor wg indeksu PM2.5
+// 24 słupki (godziny doby), kolor wg indeksu PM2.5; godziny bez pomiarów — szary znacznik zamiast pustej dziury
 function profileSvg(values, height = 70) {
-  const vals = values.map(v => (v == null ? null : v));
-  const max = Math.max(...vals.filter(v => v != null), 1);
+  const max = Math.max(...values.filter(v => v != null), 1);
   const W = 600, H = height, gap = 3, bw = (W - gap * 23) / 24;
-  const bars = vals.map((v, h) => {
-    if (v == null) return "";
-    const bh = Math.max(2, (H - 14) * v / max);
-    return `<rect x="${(h * (bw + gap)).toFixed(1)}" y="${(H - 14 - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${colorFor("pm25", v)}"><title>${h}:00 — ${fmt(v)} µg/m³</title></rect>`;
+  const bars = values.map((v, h) => {
+    const x = (h * (bw + gap)).toFixed(1);
+    if (v == null) {
+      return `<rect x="${x}" y="${H - 4}" width="${bw.toFixed(1)}" height="4" rx="1" fill="#d0d5dd"><title>${h}:00 — brak pomiarów o tej porze</title></rect>`;
+    }
+    const bh = Math.max(2, (H - 2) * v / max);
+    return `<rect x="${x}" y="${(H - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${colorFor("pm25", v)}"><title>${h}:00 — ${fmt(v)} µg/m³</title></rect>`;
   }).join("");
-  const labels = [0, 6, 12, 18, 23].map(h => `<text x="${(h * (bw + gap) + bw / 2).toFixed(1)}" y="${H - 2}" font-size="10" text-anchor="middle" fill="#667085">${h}</text>`).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px">${bars}${labels}</svg>`;
+  const labels = [0, 3, 6, 9, 12, 15, 18, 21].map(h =>
+    `<span style="left:${((h + 0.5) / 24 * 100).toFixed(2)}%">${h}</span>`).join("");
+  return `<div class="profile-chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px">${bars}</svg>
+    <div class="x-axis">${labels}</div><div class="axis-note">godzina · najwyżej ${fmt(max)} µg/m³</div></div>`;
 }
 
 function trendSvg(trend) {
@@ -800,7 +839,8 @@ async function openStats() {
     <p class="muted">Mediana z działających czujników; w rankingu ${num(st.cities_ranked)} miejscowości z co najmniej 5 czujnikami.</p>
     <h2>Profil dobowy PM2.5 w Polsce</h2>
     ${st.profile && st.profile.pm25.some(v => v != null)
-      ? profileSvg(st.profile.pm25) + `<p class="muted">Średnia ze wszystkich odczytów o danej godzinie (dni zbierania: ${st.profile.days}). W sezonie grzewczym szczyt wypada zwykle wieczorem.</p>`
+      ? profileSvg(st.profile.pm25) + `<p class="muted">Średnia ze wszystkich odczytów o danej godzinie — ${coverageText(st.profile)}.
+          ${st.profile.hours_covered < 24 ? "Szare godziny: jeszcze nie mierzyliśmy o tej porze. " : ""}W sezonie grzewczym szczyt wypada zwykle wieczorem.</p>`
       : `<p class="muted">Profil pojawi się po pierwszych dobach zbierania.</p>`}
     <h2>Paczkomaty kontra stacje GIOŚ</h2>
     ${compareHtml(st.compare)}
