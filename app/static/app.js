@@ -13,12 +13,13 @@ const METRICS = {
   pressure_sl: { label: "Ciśnienie", unit: "hPa", kind: "ramp", digits: 0,
                  ramp: ["#3b4cc0", "#8db0fe", "#f2f2f2", "#f49a7b", "#b40426"],
                  note: "Zredukowane do poziomu morza — porównywalne między miastami." },
-  pressure_trend: { label: "Trend ciśnienia", unit: "hPa/3 h", kind: "ramp", digits: 1, fixed: [-4, 4], live: true,
+  pressure_trend: { label: "Trend ciśnienia", unit: "hPa/3 h", kind: "ramp", digits: 1, fixed: [-4, 4],
                     ramp: ["#5e3c99", "#b2abd2", "#f7f7f7", "#fdb863", "#e66101"],
                     note: "Zmiana ciśnienia w ciągu ~3 h. Spada (fiolet) — nadchodzi niż albo front, często deszcz i wiatr; rośnie (pomarańcz) — wyż, poprawa pogody." },
-  humidity: { label: "Wilgotność", unit: "%", kind: "ramp", digits: 0, fixed: [20, 100],
+  humidity: { label: "Wilgotność", unit: "%", kind: "ramp", digits: 0,
               ramp: ["#a6611a", "#dfc27d", "#f5f5f5", "#80cdc1", "#018571"],
-              note: "Mierzona w obudowie paczkomatu." },
+              note: "Mierzona w obudowie paczkomatu i zawyżona: w porównaniu z modelem pogodowym (Open-Meteo) o ok. 10–25 punktów, " +
+                    "dlatego nocą większość czujników pokazuje 90–100%. Dobra do porównań między miejscami i godzinami, nie jako wartość bezwzględna." },
   temperature: { label: "Temperatura", unit: "°C", kind: "ramp", digits: 1,
                  ramp: ["#313695", "#74add1", "#ffffbf", "#f46d43", "#a50026"],
                  note: "Uwaga: mierzona w obudowie paczkomatu — w słońcu mocno zawyżona. To nie jest temperatura powietrza." },
@@ -404,7 +405,6 @@ function renderLegend() {
   if (m.kind === "ramp" && !m.fixed && state.periodDomains[metric] && state.frames.length) {
     html += `<div class="note">Skala wspólna dla okresu ${dayHhmm(state.frames[0].ts)} – ${dayHhmm(state.frames[state.frames.length - 1].ts)}.</div>`;
   }
-  if (state.frameIdx !== null && m.live) html += `<div class="note"><b>Ta wielkość nie ma historii</b> — przesuń suwak na „Teraz”.</div>`;
   if (state.showWind) html += `<div class="note">Strzałki: kierunek, w który wieje wiatr; kolor i wielkość — prędkość (Open-Meteo, co godzinę).</div>`;
   $("#legend").innerHTML = html;
 }
@@ -647,7 +647,7 @@ async function loadFrames() {
 async function loadPeriodDomains() {
   if (!state.frames.length) { state.periodDomains = {}; return; }
   const a = state.frames[0].ts, b = state.frames[state.frames.length - 1].ts;
-  const ramp = Object.entries(METRICS).filter(([k, m]) => m.kind === "ramp" && !m.fixed && !m.live).map(([k]) => k);
+  const ramp = Object.entries(METRICS).filter(([k, m]) => m.kind === "ramp" && !m.fixed).map(([k]) => k);
   const res = await Promise.all(ramp.map(k => fetch(`/api/domain?metric=${k}&ts_from=${a}&ts_to=${b}`).then(x => x.json()).catch(() => ({}))));
   state.periodDomains = {};
   ramp.forEach((k, i) => { if (res[i].lo != null) state.periodDomains[k] = res[i]; });
@@ -678,7 +678,7 @@ function frameValues(ts, metric) {
 // pobieranie z wyprzedzeniem kilku kolejnych klatek (wartości i — w widoku plamy — obrazy)
 function prefetchFrames(from, count = 3) {
   for (const f of state.frames.slice(from, from + count)) {
-    if (!METRICS[state.metric].live) frameValues(f.ts, state.metric);
+    frameValues(f.ts, state.metric);
     if (state.view === "heat") preloadImage(surfaceUrl(state.metric, f.ts));
   }
 }
@@ -695,13 +695,9 @@ async function setFrame(idx) {
     state.frameIdx = idx;
     const f = state.frames[idx];
     $("#time-label").textContent = fmtTime(f.ts);
-    if (METRICS[state.metric].live) {      // trend ciśnienia nie ma historii
-      state.frameValues = {};
-    } else {
-      const values = await frameValues(f.ts, state.metric);
-      if (state.frameIdx !== idx) return;  // użytkownik przesunął suwak dalej
-      state.frameValues = values;
-    }
+    const values = await frameValues(f.ts, state.metric);
+    if (state.frameIdx !== idx) return;    // użytkownik przesunął suwak dalej
+    state.frameValues = values;
   }
   $("#time-live").classList.toggle("active", state.frameIdx === null);
   state.hexRes = null;

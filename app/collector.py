@@ -709,7 +709,24 @@ def build_cache():
 METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "pressure_trend", "humidity", "temperature")
 
 
-HISTORY_METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "humidity", "temperature")  # są w tabeli readings
+HISTORY_METRICS = ("pm1", "pm25", "pm10", "pressure_sl", "pressure_trend", "humidity", "temperature")
+
+
+def _hist_rows(metric, ts, with_pos=False):
+    """Odczyty przebiegu `ts`: (name[, lat, lon], v). Trend ciśnienia liczony w locie — różnica względem
+    przebiegu sprzed ~3 h, tak samo jak `pressure_trend()` dla bieżącego stanu."""
+    pos = ", k.lat, k.lon" if with_pos else ""
+    join = " JOIN lockers k USING(name)" if with_pos else ""
+    if metric != "pressure_trend":
+        return db.q(f"SELECT r.name{pos}, r.{metric} AS v FROM readings r{join} WHERE r.ts = ? AND r.{metric} IS NOT NULL",
+                    (ts,))
+    prev = db.q1("SELECT ts FROM readings WHERE ts BETWEEN ? AND ? GROUP BY ts HAVING COUNT(*) > 500 "
+                 "ORDER BY ABS(ts - ?) LIMIT 1", (ts - 3.5 * 3600, ts - 2.5 * 3600, ts - 3 * 3600))
+    if not prev:
+        return []
+    return db.q(f"SELECT r.name{pos}, ROUND(r.pressure_sl - p.pressure_sl, 1) AS v FROM readings r{join} "
+                f"JOIN readings p ON p.name = r.name AND p.ts = ? "
+                f"WHERE r.ts = ? AND r.pressure_sl IS NOT NULL AND p.pressure_sl IS NOT NULL", (prev["ts"], ts))
 
 
 def metric_points(metric, ts=None, include_suspect=False):
@@ -723,8 +740,7 @@ def metric_points(metric, ts=None, include_suspect=False):
     if metric not in HISTORY_METRICS:
         return []
     skip = set() if include_suspect else {f["properties"]["name"] for f in feats if f["properties"]["suspect"]}
-    rows = db.q(f"SELECT r.name, k.lat, k.lon, r.{metric} AS v FROM readings r JOIN lockers k USING(name) "
-                f"WHERE r.ts = ? AND r.{metric} IS NOT NULL", (ts,))
+    rows = _hist_rows(metric, ts, with_pos=True)
     return [(r["lat"], r["lon"], r["v"]) for r in rows if r["name"] not in skip]
 
 
@@ -765,8 +781,7 @@ def frame_values(ts, metric):
     if key not in cache.setdefault("frames", {}):
         if len(cache["frames"]) > 200:
             cache["frames"].clear()
-        rows = db.q(f"SELECT name, {metric} AS v FROM readings WHERE ts = ? AND {metric} IS NOT NULL", (ts,))
-        cache["frames"][key] = {r["name"]: r["v"] for r in rows}
+        cache["frames"][key] = {r["name"]: r["v"] for r in _hist_rows(metric, ts)}
     return cache["frames"][key]
 
 

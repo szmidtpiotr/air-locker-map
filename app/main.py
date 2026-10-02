@@ -181,7 +181,7 @@ def api_frames(hours: int = 24):
 @app.get("/api/domain")
 def api_domain(metric: str, ts_from: int, ts_to: int):
     """Wspólny zakres skali dla okresu (animacja ma stałe kolory)."""
-    if metric not in collector.HISTORY_METRICS or ts_to < ts_from or ts_to - ts_from > 400 * 86400:
+    if metric not in collector.HISTORY_METRICS or metric == "pressure_trend" or ts_to < ts_from or ts_to - ts_from > 400 * 86400:
         raise HTTPException(400, "zły parametr")
     return JSONResponse(collector.value_domain(metric, ts_from, ts_to) or {}, headers={"Cache-Control": "max-age=600"})
 
